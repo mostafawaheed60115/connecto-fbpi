@@ -66,7 +66,16 @@ export const noonApi = {
   signedImportUrl: (file_type) => json('/new_noon/catalog/imports/signed-url', { file_type }),
   barcodeImport: (body) => json('/new_noon/catalog/imports/barcodes', body),
   importStatus: (reference) => apiRequest(`/new_noon/catalog/imports/${encodeURIComponent(reference)}`),
-  fbpiOrders: (limit = 100, unreadOnly = false) => apiRequest(`/new_noon/fbpi/orders?limit=${limit}&unread_only=${unreadOnly}`),
+  fbpiOrders: (limit = 200, unreadOnly = false, filters = {}) => {
+    const query = new URLSearchParams({
+      warehouse_code: filters.warehouse_code || TARGET_WAREHOUSE,
+      limit: String(limit),
+      unread_only: String(unreadOnly),
+    })
+    if (filters.created_after) query.set('created_after', filters.created_after)
+    if (filters.created_before) query.set('created_before', filters.created_before)
+    return apiRequest(`/new_noon/fbpi/orders?${query}`)
+  },
   markFbpiOrdersRead: (order_nrs) => json('/new_noon/fbpi/orders/mark-read', { order_nrs }),
   fbpiOrder: (orderNr) => apiRequest(`/new_noon/fbpi/orders/${encodeURIComponent(orderNr)}`),
   fbpiAwbs: (country_code, qty) => json('/new_noon/fbpi/shipments/awbs', { country_code, qty }),

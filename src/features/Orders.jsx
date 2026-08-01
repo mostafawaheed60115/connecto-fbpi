@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { noonApi, TARGET_WAREHOUSE } from '../api'
 import { useAsyncAction } from '../hooks/useAsyncAction'
+import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import { extractAwbs, formatDate, orderState } from '../utils/format'
 import { DataTable, ErrorNotice, Field, Icon, Modal, Panel, StatusBadge } from '../components/ui'
 
@@ -56,7 +57,8 @@ export function Orders({ notify }) {
   const [busyOrders, setBusyOrders] = useState(() => new Set())
   const [shipmentResults, setShipmentResults] = useState(null)
 
-  useEffect(() => { inbox.run(200) }, [inbox.run])
+  useEffect(() => { inbox.run(500) }, [inbox.run])
+  useAutoRefresh(() => inbox.run(500))
 
   const rows = useMemo(() => (inbox.result?.orders || []).filter((entry) => entry.order).map((entry) => ({ ...entry.order, notification: entry })), [inbox.result])
   const filtered = useMemo(() => rows.filter((order) => {
@@ -84,7 +86,7 @@ export function Orders({ notify }) {
     setDetail(order)
     if (!order.notification?.is_read) {
       await noonApi.markFbpiOrdersRead([order.fbpi_order_nr])
-      inbox.run(200)
+      inbox.run(500)
     }
   }
 
@@ -95,7 +97,7 @@ export function Orders({ notify }) {
     const response = await fetchOrder.run(orderNr)
     if (response) {
       setManualOrder('')
-      await inbox.run(200)
+      await inbox.run(500)
       notify(`${orderNr} added to the order inbox.`)
     }
   }
@@ -118,7 +120,7 @@ export function Orders({ notify }) {
       const response = await noonApi.createFbpiShipment(createShipmentPayload(order, awb))
       setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, integration_shipment_nr: response?.integration_shipment_nr || 'Created', success: true }])
       notify(`Shipment created for ${order.fbpi_order_nr}.`)
-      inbox.run(200)
+      inbox.run(500)
     } catch (error) {
       setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, success: false, message: error.message }])
     } finally {
@@ -136,7 +138,7 @@ export function Orders({ notify }) {
       setShipmentResults(response.results || [])
       setSelected(new Set())
       notify(`${(response.results || []).filter((item) => item.success).length} shipments created.`)
-      inbox.run(200)
+      inbox.run(500)
     }
   }
 
@@ -167,7 +169,7 @@ export function Orders({ notify }) {
       <button className={status === 'shipped' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('shipped')}><span>Shipped</span><strong>{counts.shipped}</strong></button>
       <button className={status === 'cancelled' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('cancelled')}><span>Cancelled</span><strong>{counts.cancelled}</strong></button>
     </div>
-    <Panel title="Orders" description="Notifications are enriched with the latest Noon order data." actions={<button className="secondary-button" onClick={() => inbox.run(200)} disabled={inbox.busy}><Icon name="refresh" size={15} /> Refresh orders</button>}>
+    <Panel title="Orders" description="Loaded and paginated directly from Noon's FBPI warehouse order list." actions={<button className="secondary-button" onClick={() => inbox.run(500)} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh orders'}</button>}>
       <div className="orders-toolbar">
         <div className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search order, SKU, merchant, or warehouse" /></div>
         <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="ready">Ready to ship</option><option value="processing">Processing</option><option value="shipped">Shipped</option><option value="cancelled">Cancelled</option></select>
@@ -175,7 +177,7 @@ export function Orders({ notify }) {
       </div>
       <ErrorNotice error={inbox.error || fetchOrder.error || allocate.error || bulkCreate.error} />
       {selected.size ? <div className="bulk-action-bar"><strong>{selected.size} selected</strong><button className="secondary-button" onClick={allocateForSelection} disabled={allocate.busy}>{allocate.busy ? 'Allocating…' : 'Allocate AWBs'}</button><button className="primary-button" onClick={createSelected} disabled={bulkCreate.busy}>{bulkCreate.busy ? 'Creating…' : `Create shipments (${selected.size})`}</button><button className="icon-button" onClick={() => setSelected(new Set())} aria-label="Clear selection"><Icon name="close" /></button></div> : null}
-      {inbox.busy ? <div className="loading-state">Fetching all order data…</div> : <DataTable columns={columns} rows={filtered} rowKey={(order) => order.fbpi_order_nr} emptyTitle="No matching orders" />}
+      {inbox.busy && !inbox.result ? <div className="loading-state">Fetching all order data from Noon…</div> : <DataTable columns={columns} rows={filtered} rowKey={(order) => order.fbpi_order_nr} emptyTitle="No matching orders" />}
     </Panel>
     <Panel title="Manifest handoff" description="Manifest creation remains a manual Noon Seller Lab operation after shipments are created."><ol className="manifest-list"><li>Open Fulfilled by Partner → Manifestation.</li><li>Select warehouse {TARGET_WAREHOUSE} and refresh pending shipments.</li><li>Select the created shipments, confirm the manifest, then print labels.</li></ol></Panel>
     {detail ? <OrderDetails order={detail} onClose={() => setDetail(null)} /> : null}

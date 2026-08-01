@@ -50,14 +50,12 @@ export async function createDashboardSession(password) {
 export const noonApi = {
   stockGet: (items) => json('/new_noon/stock/get', { items }),
   stockUpdate: (items) => json('/new_noon/stock/update', { items }),
+  warehouses: (filters = { fulfillment_system_code: 'fbpi' }) => json('/new_noon/warehouses/list', { filters }),
   exportCategories: () => apiRequest('/new_noon/reports/export-categories'),
   createExport: (export_category_code, params) => json('/new_noon/reports/exports', { export_category_code, params }),
   exportStatus: (export_code) => json('/new_noon/reports/export-status', { export_code }),
   pricingGet: (items) => json('/new_noon/pricing/get', { items }),
   pricingUpsert: (items) => json('/new_noon/pricing/upsert', { items }),
-  crossBorderProductUpsert: (items) => json('/new_noon/cross-border/products/upsert', { items }),
-  transferPricesGet: (items) => json('/new_noon/cross-border/transfer-prices/get', { items }),
-  transferPricesUpsert: (items) => json('/new_noon/cross-border/transfer-prices/upsert', { items }),
   categories: () => json('/new_noon/products/categories', {}),
   categoryAttributes: (category_code) => json('/new_noon/products/category-attributes', { category_code }),
   productUpsert: (body) => json('/new_noon/products/upsert', body),
@@ -68,10 +66,14 @@ export const noonApi = {
   signedImportUrl: (file_type) => json('/new_noon/catalog/imports/signed-url', { file_type }),
   barcodeImport: (body) => json('/new_noon/catalog/imports/barcodes', body),
   importStatus: (reference) => apiRequest(`/new_noon/catalog/imports/${encodeURIComponent(reference)}`),
+  fbpiOrders: (limit = 100, unreadOnly = false) => apiRequest(`/new_noon/fbpi/orders?limit=${limit}&unread_only=${unreadOnly}`),
+  markFbpiOrdersRead: (order_nrs) => json('/new_noon/fbpi/orders/mark-read', { order_nrs }),
   fbpiOrder: (orderNr) => apiRequest(`/new_noon/fbpi/orders/${encodeURIComponent(orderNr)}`),
   fbpiAwbs: (country_code, qty) => json('/new_noon/fbpi/shipments/awbs', { country_code, qty }),
   createFbpiShipment: (body) => json('/new_noon/fbpi/shipments', body),
+  createFbpiShipmentsBulk: (shipments) => json('/new_noon/fbpi/shipments/bulk', { shipments }),
   fbpiShipment: (warehouse_code, integration_shipment_nr) => json('/new_noon/fbpi/shipments/get', { warehouse_code, integration_shipment_nr }),
+  returnReferences: (barcode, merchant_codes) => json('/new_noon/returns/references/list', { barcode, ...(merchant_codes?.length ? { merchant_codes } : {}) }),
 }
 
 export const TARGET_WAREHOUSE = 'W00172296EG'

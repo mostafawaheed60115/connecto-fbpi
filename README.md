@@ -1,4 +1,4 @@
-# Connecto FBPI Control — user 35
+# Connecto FBPI Control
 
 Private React/Vite dashboard for the Noon FBPI test account. It provides two guided flows documented in `Noon FBPI operations.docx`:
 
@@ -19,7 +19,6 @@ Import this directory as a GitHub repository in Vercel. Set these environment va
 
 ```text
 VITE_API_BASE_URL=https://test.connecto-me.com/service1
-VITE_DASHBOARD_PASSWORD=<private dashboard password>
 ```
 
 Vercel builds this project with `npm run build` and publishes `dist/`.
@@ -30,4 +29,4 @@ The service1 APIs authenticate with the Connecto `access_token` cookie. A static
 
 Before using a `*.vercel.app` URL for live API calls, provide a same-site authenticated route or a secure backend-for-frontend proxy. For a Connecto custom domain, configure the service CORS allowlist for that exact dashboard origin and ensure the auth cookie is `Secure`, `SameSite=None`, and has an appropriate `.connecto-me.com` domain scope. Do not put Noon credentials, JWT secrets, or an access token in Vercel environment variables prefixed with `VITE_`.
 
-The client password screen is only a convenience gate. Enable Vercel Deployment Protection or a real server-side authentication layer for actual access control.
+The password screen creates a short-lived backend session. Configure `NOON_DASHBOARD_PASSWORD` and `NOON_DASHBOARD_USER_ID` only in the service1 backend environment; never expose them as `VITE_*` variables.

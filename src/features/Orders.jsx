@@ -20,6 +20,16 @@ function createShipmentPayload(order, awb) {
   }
 }
 
+function getShipmentId(order, createdShipmentIds) {
+  return order.integration_shipment_nr
+    || order.shipment_id
+    || order.shipmentId
+    || order.shipment?.integration_shipment_nr
+    || order.shipment?.shipment_id
+    || createdShipmentIds[order.fbpi_order_nr]
+    || null
+}
+
 function OrderDetails({ order, onClose }) {
   const state = orderState(order)
   const itemColumns = [
@@ -55,10 +65,11 @@ export function Orders({ notify }) {
   const [manualOrder, setManualOrder] = useState('')
   const [detail, setDetail] = useState(null)
   const [busyOrders, setBusyOrders] = useState(() => new Set())
+  const [createdShipmentIds, setCreatedShipmentIds] = useState({})
   const [shipmentResults, setShipmentResults] = useState(null)
 
-  useEffect(() => { inbox.run(500) }, [inbox.run])
-  useAutoRefresh(() => inbox.run(500))
+  useEffect(() => { inbox.run() }, [inbox.run])
+  useAutoRefresh(() => inbox.run())
 
   const rows = useMemo(() => (inbox.result?.orders || []).filter((entry) => entry.order).map((entry) => ({ ...entry.order, notification: entry })), [inbox.result])
   const filtered = useMemo(() => rows.filter((order) => {
@@ -86,7 +97,7 @@ export function Orders({ notify }) {
     setDetail(order)
     if (!order.notification?.is_read) {
       await noonApi.markFbpiOrdersRead([order.fbpi_order_nr])
-      inbox.run(500)
+      inbox.run()
     }
   }
 
@@ -97,7 +108,7 @@ export function Orders({ notify }) {
     const response = await fetchOrder.run(orderNr)
     if (response) {
       setManualOrder('')
-      await inbox.run(500)
+      await inbox.run()
       notify(`${orderNr} added to the order inbox.`)
     }
   }
@@ -117,10 +128,13 @@ export function Orders({ notify }) {
     if (!awb) return notify('Enter or allocate an AWB first.', 'warning')
     setBusyOrders((current) => new Set(current).add(order.fbpi_order_nr))
     try {
-      const response = await noonApi.createFbpiShipment(createShipmentPayload(order, awb))
-      setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, integration_shipment_nr: response?.integration_shipment_nr || 'Created', success: true }])
+      const payload = createShipmentPayload(order, awb)
+      const response = await noonApi.createFbpiShipment(payload)
+      const integrationShipmentNr = response?.integration_shipment_nr || payload.integration_shipment_nr
+      setCreatedShipmentIds((current) => ({ ...current, [order.fbpi_order_nr]: integrationShipmentNr }))
+      setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, integration_shipment_nr: integrationShipmentNr, success: true }])
       notify(`Shipment created for ${order.fbpi_order_nr}.`)
-      inbox.run(500)
+      inbox.run()
     } catch (error) {
       setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, success: false, message: error.message }])
     } finally {
@@ -133,18 +147,26 @@ export function Orders({ notify }) {
     const missingAwb = targets.find((order) => !awbs[order.fbpi_order_nr]?.trim())
     if (!targets.length) return notify('Select ready-to-ship orders first.', 'warning')
     if (missingAwb) return notify(`Allocate an AWB for ${missingAwb.fbpi_order_nr}.`, 'warning')
-    const response = await bulkCreate.run(targets.map((order) => createShipmentPayload(order, awbs[order.fbpi_order_nr])))
+    const payloads = targets.map((order) => createShipmentPayload(order, awbs[order.fbpi_order_nr]))
+    const payloadShipmentIds = Object.fromEntries(payloads.map((payload) => [payload.fbpi_order_nr, payload.integration_shipment_nr]))
+    const response = await bulkCreate.run(payloads)
     if (response) {
-      setShipmentResults(response.results || [])
+      const results = response.results || []
+      setCreatedShipmentIds((current) => ({
+        ...current,
+        ...Object.fromEntries(results.filter((item) => item.success).map((item) => [item.fbpi_order_nr, item.integration_shipment_nr || payloadShipmentIds[item.fbpi_order_nr]])),
+      }))
+      setShipmentResults(results)
       setSelected(new Set())
-      notify(`${(response.results || []).filter((item) => item.success).length} shipments created.`)
-      inbox.run(500)
+      notify(`${results.filter((item) => item.success).length} shipments created.`)
+      inbox.run()
     }
   }
 
   const columns = [
     { key: 'select', label: '', render: (order) => { const selectable = orderState(order).key === 'ready'; return <input type="checkbox" aria-label={`Select ${order.fbpi_order_nr}`} checked={selected.has(order.fbpi_order_nr)} disabled={!selectable} onChange={() => toggle(order.fbpi_order_nr)} onClick={(event) => event.stopPropagation()} /> } },
     { key: 'order', label: 'Order', render: (order) => <button className="table-link" onClick={() => openOrder(order)}>{order.fbpi_order_nr}</button> },
+    { key: 'shipment_id', label: 'Shipment ID', render: (order) => getShipmentId(order, createdShipmentIds) || <span className="muted">—</span> },
     { key: 'created', label: 'Created', render: (order) => formatDate(order.order_created_at) },
     { key: 'items', label: 'Items', render: (order) => <div className="sku-stack"><strong>{order.items?.length || 0}</strong><small>{(order.items || []).map((item) => item.partner_sku).join(', ')}</small></div> },
     { key: 'status', label: 'Status', render: (order) => { const state = orderState(order); return <StatusBadge tone={state.tone}>{state.label}</StatusBadge> } },
@@ -169,7 +191,7 @@ export function Orders({ notify }) {
       <button className={status === 'shipped' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('shipped')}><span>Shipped</span><strong>{counts.shipped}</strong></button>
       <button className={status === 'cancelled' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('cancelled')}><span>Cancelled</span><strong>{counts.cancelled}</strong></button>
     </div>
-    <Panel title="Orders" description="Loaded and paginated directly from Noon's FBPI warehouse order list." actions={<button className="secondary-button" onClick={() => inbox.run(500)} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh orders'}</button>}>
+    <Panel title="Orders" description="Loaded and paginated directly from Noon's FBPI warehouse order list." actions={<button className="secondary-button" onClick={() => inbox.run()} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh orders'}</button>}>
       <div className="orders-toolbar">
         <div className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search order, SKU, merchant, or warehouse" /></div>
         <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="ready">Ready to ship</option><option value="processing">Processing</option><option value="shipped">Shipped</option><option value="cancelled">Cancelled</option></select>

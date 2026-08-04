@@ -66,12 +66,12 @@ export const noonApi = {
   signedImportUrl: (file_type) => json('/new_noon/catalog/imports/signed-url', { file_type }),
   barcodeImport: (body) => json('/new_noon/catalog/imports/barcodes', body),
   importStatus: (reference) => apiRequest(`/new_noon/catalog/imports/${encodeURIComponent(reference)}`),
-  fbpiOrders: (limit = 200, unreadOnly = false, filters = {}) => {
+  fbpiOrders: (limit = null, unreadOnly = false, filters = {}) => {
     const query = new URLSearchParams({
       warehouse_code: filters.warehouse_code || TARGET_WAREHOUSE,
-      limit: String(limit),
       unread_only: String(unreadOnly),
     })
+    if (limit != null) query.set('limit', String(limit))
     if (filters.created_after) query.set('created_after', filters.created_after)
     if (filters.created_before) query.set('created_before', filters.created_before)
     return apiRequest(`/new_noon/fbpi/orders?${query}`)

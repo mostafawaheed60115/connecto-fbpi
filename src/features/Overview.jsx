@@ -7,8 +7,16 @@ import { DataTable, ErrorNotice, Icon, Panel, StatusBadge } from '../components/
 
 export function Overview({ onNavigate }) {
   const inbox = useAsyncAction(noonApi.fbpiOrders)
+  const markNotificationsRead = useAsyncAction(noonApi.markFbpiOrdersRead)
   useEffect(() => { inbox.run() }, [inbox.run])
   useAutoRefresh(() => inbox.run())
+
+  async function openNotifications() {
+    const response = await markNotificationsRead.run()
+    if (!response) return
+    await inbox.run()
+    onNavigate('orders')
+  }
 
   const orders = (inbox.result?.orders || []).slice(0, 8)
   const recentRows = orders.map((entry) => ({ ...entry.order, received_at: entry.received_at, is_read: entry.is_read }))
@@ -21,9 +29,9 @@ export function Overview({ onNavigate }) {
   ]
 
   return <>
-    <button className="order-notification" onClick={() => onNavigate('orders')}>
+    <button className="order-notification" onClick={openNotifications} disabled={markNotificationsRead.busy}>
       <span className="notification-icon"><Icon name="bell" /></span>
-      <span><strong>{inbox.result?.unread_count || 0} new order notifications</strong><small>Open the order inbox to allocate AWBs and create shipments.</small></span>
+      <span><strong>{inbox.result?.unread_count || 0} new order notifications</strong><small>{markNotificationsRead.busy ? 'Marking notifications as seen…' : 'Open the order inbox to mark notifications as seen.'}</small></span>
       <Icon name="arrow" />
     </button>
     <div className="metric-grid dashboard-metrics">
@@ -33,7 +41,7 @@ export function Overview({ onNavigate }) {
       <button className="metric-card metric-button" onClick={() => onNavigate('returns')}><div className="metric-icon metric-amber"><Icon name="return" /></div><div className="metric-copy"><span>Returns</span><strong>Lookup</strong><small>scan a barcode</small></div></button>
     </div>
     <Panel title="Recent orders" description="Loaded directly from Noon's authoritative FBPI warehouse order list." actions={<button className="text-button" onClick={() => inbox.run()} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh'}</button>}>
-      <ErrorNotice error={inbox.error} />
+      <ErrorNotice error={inbox.error || markNotificationsRead.error} />
       {inbox.busy && !inbox.result ? <div className="loading-state">Loading orders from Noon…</div> : <DataTable columns={columns} rows={recentRows} rowKey={(row) => row.fbpi_order_nr} emptyTitle="No orders found for this warehouse" />}
     </Panel>
   </>

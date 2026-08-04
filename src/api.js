@@ -78,6 +78,7 @@ export const noonApi = {
   },
   markFbpiOrdersRead: (order_nrs) => json('/new_noon/fbpi/orders/mark-read', { order_nrs }),
   fbpiOrder: (orderNr) => apiRequest(`/new_noon/fbpi/orders/${encodeURIComponent(orderNr)}`),
+  updateFbpiOrder: (body) => json('/new_noon/fbpi/orders/update', body),
   fbpiAwbs: (country_code, qty) => json('/new_noon/fbpi/shipments/awbs', { country_code, qty }),
   createFbpiShipment: (body) => json('/new_noon/fbpi/shipments', body),
   createFbpiShipmentsBulk: (shipments) => json('/new_noon/fbpi/shipments/bulk', { shipments }),

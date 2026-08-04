@@ -3,7 +3,7 @@ import { noonApi, TARGET_WAREHOUSE } from '../api'
 import { useAsyncAction } from '../hooks/useAsyncAction'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import { extractAwbs, formatDate, orderState } from '../utils/format'
-import { DataTable, ErrorNotice, Field, Icon, Modal, Panel, StatusBadge } from '../components/ui'
+import { DataTable, ErrorNotice, Icon, Modal, Panel, StatusBadge } from '../components/ui'
 
 function shipmentNumber(orderNr) {
   const compactOrder = orderNr.replace(/[^A-Za-z0-9]/g, '').slice(-22)
@@ -20,19 +20,35 @@ function createShipmentPayload(order, awb) {
   }
 }
 
-function getShipmentId(order, createdShipmentIds) {
-  return order.integration_shipment_nr
-    || order.shipment_id
-    || order.shipmentId
-    || order.shipment?.integration_shipment_nr
-    || order.shipment?.shipment_id
-    || createdShipmentIds[order.fbpi_order_nr]
-    || null
+function getShipmentIds(order, createdShipmentIds) {
+  const storedIds = Array.isArray(order.shipment_ids) ? order.shipment_ids : []
+  const values = [
+    ...storedIds,
+    order.integration_shipment_nr,
+    order.shipment_id,
+    order.shipmentId,
+    order.shipment?.integration_shipment_nr,
+    order.shipment?.shipment_id,
+    createdShipmentIds[order.fbpi_order_nr],
+  ]
+  return [...new Set(values.filter(Boolean))]
 }
 
-function OrderDetails({ order, onClose }) {
+function getShipmentId(order, createdShipmentIds) {
+  return getShipmentIds(order, createdShipmentIds).join(', ') || null
+}
+
+function canMarkOutOfStock(item) {
+  return item.mp_status !== 'MP_ITEM_STATUS_CANCELLED'
+    && !item.cancellation_reason_code
+    && item.integration_status !== 'INTEGRATION_ITEM_STATUS_OUT_OF_STOCK'
+    && item.integration_status !== 'INTEGRATION_ITEM_STATUS_SHIPPED'
+}
+
+function OrderDetails({ order, onClose, onMarkOutOfStock, busyItemNr }) {
   const state = orderState(order)
   const itemColumns = [
+    { key: 'actions', label: 'Actions', render: (row) => canMarkOutOfStock(row) ? <button className="secondary-button compact-button" disabled={busyItemNr === row.mp_item_nr} onClick={() => onMarkOutOfStock(order, row)}>{busyItemNr === row.mp_item_nr ? 'Updating…' : 'Mark out of stock'}</button> : <span className="muted">No action</span> },
     { key: 'mp_item_nr', label: 'Item number' },
     { key: 'partner_sku', label: 'Seller SKU' },
     { key: 'mp_status', label: 'Marketplace status', render: (row) => row.mp_status?.replace('MP_ITEM_STATUS_', '') || '—' },
@@ -58,6 +74,7 @@ export function Orders({ notify }) {
   const allocate = useAsyncAction(noonApi.fbpiAwbs)
   const bulkCreate = useAsyncAction(noonApi.createFbpiShipmentsBulk)
   const fetchOrder = useAsyncAction(noonApi.fbpiOrder)
+  const updateOrder = useAsyncAction(noonApi.updateFbpiOrder)
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('all')
   const [selected, setSelected] = useState(() => new Set())
@@ -65,6 +82,7 @@ export function Orders({ notify }) {
   const [manualOrder, setManualOrder] = useState('')
   const [detail, setDetail] = useState(null)
   const [busyOrders, setBusyOrders] = useState(() => new Set())
+  const [busyItemNr, setBusyItemNr] = useState(null)
   const [createdShipmentIds, setCreatedShipmentIds] = useState({})
   const [shipmentResults, setShipmentResults] = useState(null)
 
@@ -83,7 +101,7 @@ export function Orders({ notify }) {
     result.total += 1
     result[orderState(order).key] = (result[orderState(order).key] || 0) + 1
     return result
-  }, { total: 0, ready: 0, processing: 0, shipped: 0, cancelled: 0 }), [rows])
+  }, { total: 0, pending: 0, ready: 0, out_of_stock: 0, processing: 0, attention: 0, shipped: 0, cancelled: 0 }), [rows])
 
   function toggle(orderNr) {
     setSelected((current) => {
@@ -95,9 +113,28 @@ export function Orders({ notify }) {
 
   async function openOrder(order) {
     setDetail(order)
-    if (!order.notification?.is_read) {
+    if (order.notification?.is_read === false) {
       await noonApi.markFbpiOrdersRead([order.fbpi_order_nr])
       inbox.run()
+    }
+  }
+
+  async function markOutOfStock(order, item) {
+    setBusyItemNr(item.mp_item_nr)
+    try {
+      const response = await updateOrder.run({
+        fbpi_order_nr: order.fbpi_order_nr,
+        items: [{ mp_item_nr: item.mp_item_nr, status: 'UPDATE_ORDER_REQUEST_ITEM_STATUS_OUT_OF_STOCK' }],
+      })
+      if (!response) return
+      setDetail((current) => current?.fbpi_order_nr === order.fbpi_order_nr ? {
+        ...current,
+        items: current.items.map((currentItem) => currentItem.mp_item_nr === item.mp_item_nr ? { ...currentItem, integration_status: 'INTEGRATION_ITEM_STATUS_OUT_OF_STOCK' } : currentItem),
+      } : current)
+      notify(`${item.partner_sku || item.mp_item_nr} marked out of stock in Noon.`)
+      await inbox.run()
+    } finally {
+      setBusyItemNr(null)
     }
   }
 
@@ -186,23 +223,23 @@ export function Orders({ notify }) {
   return <>
     <div className="order-summary-strip">
       <button className={status === 'all' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('all')}><span>Overall orders</span><strong>{counts.total}</strong></button>
+      <button className={status === 'pending' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('pending')}><span>Pending acknowledgment</span><strong>{counts.pending}</strong></button>
       <button className={status === 'ready' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('ready')}><span>Ready to ship</span><strong>{counts.ready}</strong></button>
-      <button className={status === 'processing' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('processing')}><span>Processing</span><strong>{counts.processing}</strong></button>
       <button className={status === 'shipped' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('shipped')}><span>Shipped</span><strong>{counts.shipped}</strong></button>
       <button className={status === 'cancelled' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('cancelled')}><span>Cancelled</span><strong>{counts.cancelled}</strong></button>
     </div>
     <Panel title="Orders" description="Loaded and paginated directly from Noon's FBPI warehouse order list." actions={<button className="secondary-button" onClick={() => inbox.run()} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh orders'}</button>}>
       <div className="orders-toolbar">
         <div className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search order, SKU, merchant, or warehouse" /></div>
-        <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="ready">Ready to ship</option><option value="processing">Processing</option><option value="shipped">Shipped</option><option value="cancelled">Cancelled</option></select>
+        <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="pending">Pending acknowledgment</option><option value="ready">Ready to ship</option><option value="out_of_stock">Out of stock</option><option value="attention">Partially unavailable</option><option value="processing">Processing</option><option value="shipped">Shipped</option><option value="cancelled">Cancelled</option></select>
         <form className="manual-order-form" onSubmit={addOrder}><input value={manualOrder} onChange={(event) => setManualOrder(event.target.value)} placeholder="Fetch an order number" /><button className="secondary-button" disabled={!manualOrder.trim() || fetchOrder.busy}>Add order</button></form>
       </div>
-      <ErrorNotice error={inbox.error || fetchOrder.error || allocate.error || bulkCreate.error} />
+      <ErrorNotice error={inbox.error || fetchOrder.error || updateOrder.error || allocate.error || bulkCreate.error} />
       {selected.size ? <div className="bulk-action-bar"><strong>{selected.size} selected</strong><button className="secondary-button" onClick={allocateForSelection} disabled={allocate.busy}>{allocate.busy ? 'Allocating…' : 'Allocate AWBs'}</button><button className="primary-button" onClick={createSelected} disabled={bulkCreate.busy}>{bulkCreate.busy ? 'Creating…' : `Create shipments (${selected.size})`}</button><button className="icon-button" onClick={() => setSelected(new Set())} aria-label="Clear selection"><Icon name="close" /></button></div> : null}
       {inbox.busy && !inbox.result ? <div className="loading-state">Fetching all order data from Noon…</div> : <DataTable columns={columns} rows={filtered} rowKey={(order) => order.fbpi_order_nr} emptyTitle="No matching orders" />}
     </Panel>
     <Panel title="Manifest handoff" description="Manifest creation remains a manual Noon Seller Lab operation after shipments are created."><ol className="manifest-list"><li>Open Fulfilled by Partner → Manifestation.</li><li>Select warehouse {TARGET_WAREHOUSE} and refresh pending shipments.</li><li>Select the created shipments, confirm the manifest, then print labels.</li></ol></Panel>
-    {detail ? <OrderDetails order={detail} onClose={() => setDetail(null)} /> : null}
+    {detail ? <OrderDetails order={detail} onClose={() => setDetail(null)} onMarkOutOfStock={markOutOfStock} busyItemNr={busyItemNr} /> : null}
     {shipmentResults ? <Modal title="Shipment results" description="Each order is reported independently." onClose={() => setShipmentResults(null)} wide><DataTable columns={resultColumns} rows={shipmentResults} rowKey={(row) => row.fbpi_order_nr} /></Modal> : null}
   </>
 }

@@ -18,7 +18,7 @@ export function Overview({ onNavigate }) {
     onNavigate('orders')
   }
 
-  const orders = (inbox.result?.orders || []).slice(0, 8)
+  const orders = (inbox.result?.orders || []).filter((entry) => entry.order).slice(0, 8)
   const recentRows = orders.map((entry) => ({ ...entry.order, received_at: entry.received_at, is_read: entry.is_read }))
   const columns = [
     { key: 'order', label: 'Order', render: (row) => <button className="table-link" onClick={() => onNavigate('orders')}>{row.fbpi_order_nr || 'Unavailable'}</button> },
@@ -29,11 +29,11 @@ export function Overview({ onNavigate }) {
   ]
 
   return <>
-    <button className="order-notification" onClick={openNotifications} disabled={markNotificationsRead.busy}>
+    {(inbox.result?.unread_count || 0) > 0 ? <button className="order-notification" onClick={openNotifications} disabled={markNotificationsRead.busy}>
       <span className="notification-icon"><Icon name="bell" /></span>
-      <span><strong>{inbox.result?.unread_count || 0} new order notifications</strong><small>{markNotificationsRead.busy ? 'Marking notifications as seen…' : 'Open the order inbox to mark notifications as seen.'}</small></span>
+      <span><strong>{inbox.result.unread_count} new order notifications</strong><small>{markNotificationsRead.busy ? 'Marking notifications as seen…' : 'Open the order inbox to mark notifications as seen.'}</small></span>
       <Icon name="arrow" />
-    </button>
+    </button> : null}
     <div className="metric-grid dashboard-metrics">
       <button className="metric-card metric-button" onClick={() => onNavigate('orders')}><div className="metric-icon metric-blue"><Icon name="orders" /></div><div className="metric-copy"><span>Overall orders</span><strong>{inbox.result?.total ?? '—'}</strong><small>open orders view</small></div></button>
       <div className="metric-card"><div className="metric-icon metric-violet"><Icon name="warehouse" /></div><div className="metric-copy"><span>Fulfillment node</span><strong>FBPI</strong><small>{TARGET_WAREHOUSE}</small></div></div>

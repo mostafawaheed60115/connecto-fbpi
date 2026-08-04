@@ -38,6 +38,14 @@ function getShipmentId(order, createdShipmentIds) {
   return getShipmentIds(order, createdShipmentIds).join(', ') || null
 }
 
+function hasShipmentId(order, createdShipmentIds) {
+  return getShipmentIds(order, createdShipmentIds).length > 0
+}
+
+function marketplaceCountry(order) {
+  return (order.mp_country_code || 'eg').toLowerCase()
+}
+
 function canMarkOutOfStock(item) {
   return item.mp_status !== 'MP_ITEM_STATUS_CANCELLED'
     && !item.cancellation_reason_code
@@ -75,6 +83,7 @@ export function Orders({ notify }) {
   const bulkCreate = useAsyncAction(noonApi.createFbpiShipmentsBulk)
   const fetchOrder = useAsyncAction(noonApi.fbpiOrder)
   const updateOrder = useAsyncAction(noonApi.updateFbpiOrder)
+  const markRead = useAsyncAction(noonApi.markFbpiOrdersRead)
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('all')
   const [selected, setSelected] = useState(() => new Set())
@@ -90,6 +99,17 @@ export function Orders({ notify }) {
   useAutoRefresh(() => inbox.run())
 
   const rows = useMemo(() => (inbox.result?.orders || []).filter((entry) => entry.order).map((entry) => ({ ...entry.order, notification: entry })), [inbox.result])
+
+  useEffect(() => {
+    const eligibleOrderNrs = new Set(rows
+      .filter((order) => orderState(order).key === 'ready' && !hasShipmentId(order, createdShipmentIds))
+      .map((order) => order.fbpi_order_nr))
+    setSelected((current) => {
+      const next = new Set([...current].filter((orderNr) => eligibleOrderNrs.has(orderNr)))
+      return next.size === current.size ? current : next
+    })
+  }, [rows, createdShipmentIds])
+
   const filtered = useMemo(() => rows.filter((order) => {
     const state = orderState(order)
     const matchesStatus = status === 'all' || state.key === status
@@ -114,12 +134,13 @@ export function Orders({ notify }) {
   async function openOrder(order) {
     setDetail(order)
     if (order.notification?.is_read === false) {
-      await noonApi.markFbpiOrdersRead([order.fbpi_order_nr])
-      inbox.run()
+      const response = await markRead.run([order.fbpi_order_nr])
+      if (response) await inbox.run()
     }
   }
 
   async function markOutOfStock(order, item) {
+    if (!window.confirm(`Mark ${item.partner_sku || item.mp_item_nr} out of stock in Noon? This cancels the item.`)) return
     setBusyItemNr(item.mp_item_nr)
     try {
       const response = await updateOrder.run({
@@ -145,15 +166,17 @@ export function Orders({ notify }) {
     const response = await fetchOrder.run(orderNr)
     if (response) {
       setManualOrder('')
-      await inbox.run()
-      notify(`${orderNr} added to the order inbox.`)
+      setDetail(response)
+      notify(`${orderNr} loaded.`)
     }
   }
 
   async function allocateForSelection() {
-    const targets = rows.filter((order) => selected.has(order.fbpi_order_nr) && orderState(order).key === 'ready')
+    const targets = rows.filter((order) => selected.has(order.fbpi_order_nr) && orderState(order).key === 'ready' && !hasShipmentId(order, createdShipmentIds))
     if (!targets.length) return notify('Select at least one ready-to-ship order.', 'warning')
-    const response = await allocate.run('eg', targets.length)
+    const countries = new Set(targets.map(marketplaceCountry))
+    if (countries.size > 1) return notify('Allocate AWBs separately for each marketplace country.', 'warning')
+    const response = await allocate.run([...countries][0], targets.length)
     const returned = extractAwbs(response)
     if (returned.length < targets.length) return notify('Noon returned fewer AWBs than requested.', 'warning')
     setAwbs((current) => ({ ...current, ...Object.fromEntries(targets.map((order, index) => [order.fbpi_order_nr, returned[index].awb_nr])) }))
@@ -161,6 +184,7 @@ export function Orders({ notify }) {
   }
 
   async function createOne(order) {
+    if (hasShipmentId(order, createdShipmentIds)) return notify('A shipment is already recorded for this order.', 'warning')
     const awb = awbs[order.fbpi_order_nr]?.trim()
     if (!awb) return notify('Enter or allocate an AWB first.', 'warning')
     setBusyOrders((current) => new Set(current).add(order.fbpi_order_nr))
@@ -169,8 +193,13 @@ export function Orders({ notify }) {
       const response = await noonApi.createFbpiShipment(payload)
       const integrationShipmentNr = response?.integration_shipment_nr || payload.integration_shipment_nr
       setCreatedShipmentIds((current) => ({ ...current, [order.fbpi_order_nr]: integrationShipmentNr }))
-      setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, integration_shipment_nr: integrationShipmentNr, success: true }])
-      notify(`Shipment created for ${order.fbpi_order_nr}.`)
+      setSelected((current) => { const next = new Set(current); next.delete(order.fbpi_order_nr); return next })
+      const trackingSaved = response?.connecto_tracking_saved !== false
+      setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, integration_shipment_nr: integrationShipmentNr, success: true, connecto_tracking_saved: trackingSaved }])
+      notify(
+        trackingSaved ? `Shipment created for ${order.fbpi_order_nr}.` : `Shipment created, but its ID could not be saved.`,
+        trackingSaved ? 'success' : 'warning',
+      )
       inbox.run()
     } catch (error) {
       setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, success: false, message: error.message }])
@@ -180,7 +209,7 @@ export function Orders({ notify }) {
   }
 
   async function createSelected() {
-    const targets = rows.filter((order) => selected.has(order.fbpi_order_nr) && orderState(order).key === 'ready')
+    const targets = rows.filter((order) => selected.has(order.fbpi_order_nr) && orderState(order).key === 'ready' && !hasShipmentId(order, createdShipmentIds))
     const missingAwb = targets.find((order) => !awbs[order.fbpi_order_nr]?.trim())
     if (!targets.length) return notify('Select ready-to-ship orders first.', 'warning')
     if (missingAwb) return notify(`Allocate an AWB for ${missingAwb.fbpi_order_nr}.`, 'warning')
@@ -195,29 +224,33 @@ export function Orders({ notify }) {
       }))
       setShipmentResults(results)
       setSelected(new Set())
-      notify(`${results.filter((item) => item.success).length} shipments created.`)
+      const trackingFailures = results.filter((item) => item.success && item.connecto_tracking_saved === false).length
+      notify(
+        trackingFailures ? `${results.filter((item) => item.success).length} shipments created; ${trackingFailures} ID(s) were not saved.` : `${results.filter((item) => item.success).length} shipments created.`,
+        trackingFailures ? 'warning' : 'success',
+      )
       inbox.run()
     }
   }
 
   const columns = [
-    { key: 'select', label: '', render: (order) => { const selectable = orderState(order).key === 'ready'; return <input type="checkbox" aria-label={`Select ${order.fbpi_order_nr}`} checked={selected.has(order.fbpi_order_nr)} disabled={!selectable} onChange={() => toggle(order.fbpi_order_nr)} onClick={(event) => event.stopPropagation()} /> } },
+    { key: 'select', label: '', render: (order) => { const selectable = orderState(order).key === 'ready' && !hasShipmentId(order, createdShipmentIds); return <input type="checkbox" aria-label={`Select ${order.fbpi_order_nr}`} checked={selected.has(order.fbpi_order_nr)} disabled={!selectable} onChange={() => toggle(order.fbpi_order_nr)} onClick={(event) => event.stopPropagation()} /> } },
     { key: 'order', label: 'Order', render: (order) => <button className="table-link" onClick={() => openOrder(order)}>{order.fbpi_order_nr}</button> },
     { key: 'shipment_id', label: 'Shipment ID', render: (order) => getShipmentId(order, createdShipmentIds) || <span className="muted">—</span> },
     { key: 'created', label: 'Created', render: (order) => formatDate(order.order_created_at) },
     { key: 'items', label: 'Items', render: (order) => <div className="sku-stack"><strong>{order.items?.length || 0}</strong><small>{(order.items || []).map((item) => item.partner_sku).join(', ')}</small></div> },
     { key: 'status', label: 'Status', render: (order) => { const state = orderState(order); return <StatusBadge tone={state.tone}>{state.label}</StatusBadge> } },
     { key: 'warehouse', label: 'Warehouse', render: (order) => order.warehouse_code || '—' },
-    { key: 'awb', label: 'AWB', render: (order) => <input className="table-input" value={awbs[order.fbpi_order_nr] || ''} onChange={(event) => setAwbs((current) => ({ ...current, [order.fbpi_order_nr]: event.target.value }))} placeholder="Enter AWB" disabled={orderState(order).key === 'shipped'} /> },
-    { key: 'shipment', label: 'Shipment', render: (order) => orderState(order).key === 'shipped' ? <StatusBadge tone="success">Created</StatusBadge> : <span className="muted">Not created</span> },
-    { key: 'actions', label: 'Actions', render: (order) => <button className="primary-button compact-button" disabled={orderState(order).key !== 'ready' || !awbs[order.fbpi_order_nr]?.trim() || busyOrders.has(order.fbpi_order_nr)} onClick={() => createOne(order)}>{busyOrders.has(order.fbpi_order_nr) ? 'Creating…' : 'Create shipment'}</button> },
+    { key: 'awb', label: 'AWB', render: (order) => <input className="table-input" value={awbs[order.fbpi_order_nr] || ''} onChange={(event) => setAwbs((current) => ({ ...current, [order.fbpi_order_nr]: event.target.value }))} placeholder="Enter AWB" disabled={orderState(order).key !== 'ready' || hasShipmentId(order, createdShipmentIds)} /> },
+    { key: 'shipment', label: 'Shipment', render: (order) => hasShipmentId(order, createdShipmentIds) ? <StatusBadge tone="success">Created</StatusBadge> : <span className="muted">Not created</span> },
+    { key: 'actions', label: 'Actions', render: (order) => <button className="primary-button compact-button" disabled={orderState(order).key !== 'ready' || hasShipmentId(order, createdShipmentIds) || !awbs[order.fbpi_order_nr]?.trim() || busyOrders.has(order.fbpi_order_nr)} onClick={() => createOne(order)}>{busyOrders.has(order.fbpi_order_nr) ? 'Creating…' : 'Create shipment'}</button> },
   ]
 
   const resultColumns = [
     { key: 'fbpi_order_nr', label: 'Order' },
     { key: 'integration_shipment_nr', label: 'Shipment number' },
     { key: 'success', label: 'Result', render: (row) => <StatusBadge tone={row.success ? 'success' : 'danger'}>{row.success ? 'Created' : 'Failed'}</StatusBadge> },
-    { key: 'message', label: 'Message', render: (row) => row.message || 'Shipment accepted by Noon' },
+    { key: 'message', label: 'Message', render: (row) => row.message || (row.connecto_tracking_saved === false ? 'Shipment accepted by Noon, but ID storage failed' : 'Shipment accepted by Noon') },
   ]
 
   return <>
@@ -232,9 +265,9 @@ export function Orders({ notify }) {
       <div className="orders-toolbar">
         <div className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search order, SKU, merchant, or warehouse" /></div>
         <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="pending">Pending acknowledgment</option><option value="ready">Ready to ship</option><option value="out_of_stock">Out of stock</option><option value="attention">Partially unavailable</option><option value="processing">Processing</option><option value="shipped">Shipped</option><option value="cancelled">Cancelled</option></select>
-        <form className="manual-order-form" onSubmit={addOrder}><input value={manualOrder} onChange={(event) => setManualOrder(event.target.value)} placeholder="Fetch an order number" /><button className="secondary-button" disabled={!manualOrder.trim() || fetchOrder.busy}>Add order</button></form>
+        <form className="manual-order-form" onSubmit={addOrder}><input value={manualOrder} onChange={(event) => setManualOrder(event.target.value)} placeholder="Open an order number" /><button className="secondary-button" disabled={!manualOrder.trim() || fetchOrder.busy}>{fetchOrder.busy ? 'Opening…' : 'Open order'}</button></form>
       </div>
-      <ErrorNotice error={inbox.error || fetchOrder.error || updateOrder.error || allocate.error || bulkCreate.error} />
+      <ErrorNotice error={inbox.error || fetchOrder.error || updateOrder.error || markRead.error || allocate.error || bulkCreate.error} />
       {selected.size ? <div className="bulk-action-bar"><strong>{selected.size} selected</strong><button className="secondary-button" onClick={allocateForSelection} disabled={allocate.busy}>{allocate.busy ? 'Allocating…' : 'Allocate AWBs'}</button><button className="primary-button" onClick={createSelected} disabled={bulkCreate.busy}>{bulkCreate.busy ? 'Creating…' : `Create shipments (${selected.size})`}</button><button className="icon-button" onClick={() => setSelected(new Set())} aria-label="Clear selection"><Icon name="close" /></button></div> : null}
       {inbox.busy && !inbox.result ? <div className="loading-state">Fetching all order data from Noon…</div> : <DataTable columns={columns} rows={filtered} rowKey={(order) => order.fbpi_order_nr} emptyTitle="No matching orders" />}
     </Panel>

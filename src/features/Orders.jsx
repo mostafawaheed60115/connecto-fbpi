@@ -4,42 +4,14 @@ import { useAsyncAction } from '../hooks/useAsyncAction'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import { extractAwbs, formatDate, orderState } from '../utils/format'
 import { DataTable, ErrorNotice, Icon, Modal, Panel, StatusBadge } from '../components/ui'
+import { createShipmentPayload, getShipmentAwb, getShipmentIds, suggestShipmentNumber } from './shipmentWorkflow.js'
 
-function shipmentNumber(orderNr) {
-  const compactOrder = orderNr.replace(/[^A-Za-z0-9]/g, '').slice(-22)
-  return `CONN-${compactOrder}-${Date.now()}`
+function getShipmentId(order, createdShipments) {
+  return getShipmentIds(order, createdShipments).join(', ') || null
 }
 
-function createShipmentPayload(order, awb) {
-  return {
-    warehouse_code: order.warehouse_code || TARGET_WAREHOUSE,
-    integration_shipment_nr: shipmentNumber(order.fbpi_order_nr),
-    fbpi_order_nr: order.fbpi_order_nr,
-    awbs: [{ courier: 'noon', awb_nr: awb.trim() }],
-    items: (order.items || []).map((item) => ({ mp_item_nr: item.mp_item_nr })),
-  }
-}
-
-function getShipmentIds(order, createdShipmentIds) {
-  const storedIds = Array.isArray(order.shipment_ids) ? order.shipment_ids : []
-  const values = [
-    ...storedIds,
-    order.integration_shipment_nr,
-    order.shipment_id,
-    order.shipmentId,
-    order.shipment?.integration_shipment_nr,
-    order.shipment?.shipment_id,
-    createdShipmentIds[order.fbpi_order_nr],
-  ]
-  return [...new Set(values.filter(Boolean))]
-}
-
-function getShipmentId(order, createdShipmentIds) {
-  return getShipmentIds(order, createdShipmentIds).join(', ') || null
-}
-
-function hasShipmentId(order, createdShipmentIds) {
-  return getShipmentIds(order, createdShipmentIds).length > 0
+function hasShipmentId(order, createdShipments) {
+  return getShipmentIds(order, createdShipments).length > 0
 }
 
 function marketplaceCountry(order) {
@@ -88,11 +60,12 @@ export function Orders({ notify }) {
   const [status, setStatus] = useState('all')
   const [selected, setSelected] = useState(() => new Set())
   const [awbs, setAwbs] = useState({})
+  const [shipmentIds, setShipmentIds] = useState({})
   const [manualOrder, setManualOrder] = useState('')
   const [detail, setDetail] = useState(null)
   const [busyOrders, setBusyOrders] = useState(() => new Set())
   const [busyItemNr, setBusyItemNr] = useState(null)
-  const [createdShipmentIds, setCreatedShipmentIds] = useState({})
+  const [createdShipments, setCreatedShipments] = useState({})
   const [shipmentResults, setShipmentResults] = useState(null)
 
   useEffect(() => { inbox.run() }, [inbox.run])
@@ -101,14 +74,27 @@ export function Orders({ notify }) {
   const rows = useMemo(() => (inbox.result?.orders || []).filter((entry) => entry.order).map((entry) => ({ ...entry.order, notification: entry })), [inbox.result])
 
   useEffect(() => {
+    setShipmentIds((current) => {
+      let next = current
+      for (const order of rows) {
+        if (orderState(order).key !== 'ready' || hasShipmentId(order, createdShipments)) continue
+        if (Object.prototype.hasOwnProperty.call(current, order.fbpi_order_nr)) continue
+        if (next === current) next = { ...current }
+        next[order.fbpi_order_nr] = suggestShipmentNumber(order.fbpi_order_nr)
+      }
+      return next
+    })
+  }, [rows, createdShipments])
+
+  useEffect(() => {
     const eligibleOrderNrs = new Set(rows
-      .filter((order) => orderState(order).key === 'ready' && !hasShipmentId(order, createdShipmentIds))
+      .filter((order) => orderState(order).key === 'ready' && !hasShipmentId(order, createdShipments))
       .map((order) => order.fbpi_order_nr))
     setSelected((current) => {
       const next = new Set([...current].filter((orderNr) => eligibleOrderNrs.has(orderNr)))
       return next.size === current.size ? current : next
     })
-  }, [rows, createdShipmentIds])
+  }, [rows, createdShipments])
 
   const filtered = useMemo(() => rows.filter((order) => {
     const state = orderState(order)
@@ -172,7 +158,7 @@ export function Orders({ notify }) {
   }
 
   async function allocateForSelection() {
-    const targets = rows.filter((order) => selected.has(order.fbpi_order_nr) && orderState(order).key === 'ready' && !hasShipmentId(order, createdShipmentIds))
+    const targets = rows.filter((order) => selected.has(order.fbpi_order_nr) && orderState(order).key === 'ready' && !hasShipmentId(order, createdShipments))
     if (!targets.length) return notify('Select at least one ready-to-ship order.', 'warning')
     const countries = new Set(targets.map(marketplaceCountry))
     if (countries.size > 1) return notify('Allocate AWBs separately for each marketplace country.', 'warning')
@@ -184,18 +170,23 @@ export function Orders({ notify }) {
   }
 
   async function createOne(order) {
-    if (hasShipmentId(order, createdShipmentIds)) return notify('A shipment is already recorded for this order.', 'warning')
+    if (hasShipmentId(order, createdShipments)) return notify('A shipment is already recorded for this order.', 'warning')
     const awb = awbs[order.fbpi_order_nr]?.trim()
+    const shipmentId = shipmentIds[order.fbpi_order_nr]?.trim()
+    if (!shipmentId) return notify('Enter an Integration Shipment ID first.', 'warning')
     if (!awb) return notify('Enter or allocate an AWB first.', 'warning')
     setBusyOrders((current) => new Set(current).add(order.fbpi_order_nr))
     try {
-      const payload = createShipmentPayload(order, awb)
+      const payload = createShipmentPayload(order, awb, shipmentId)
       const response = await noonApi.createFbpiShipment(payload)
       const integrationShipmentNr = response?.integration_shipment_nr || payload.integration_shipment_nr
-      setCreatedShipmentIds((current) => ({ ...current, [order.fbpi_order_nr]: integrationShipmentNr }))
+      setCreatedShipments((current) => ({
+        ...current,
+        [order.fbpi_order_nr]: { integration_shipment_nr: integrationShipmentNr, awb_nr: response?.awb_nr || awb },
+      }))
       setSelected((current) => { const next = new Set(current); next.delete(order.fbpi_order_nr); return next })
       const trackingSaved = response?.connecto_tracking_saved !== false
-      setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, integration_shipment_nr: integrationShipmentNr, success: true, connecto_tracking_saved: trackingSaved }])
+      setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, integration_shipment_nr: integrationShipmentNr, awb_nr: response?.awb_nr || awb, success: true, connecto_tracking_saved: trackingSaved }])
       notify(
         trackingSaved ? `Shipment created for ${order.fbpi_order_nr}.` : `Shipment created, but its ID could not be saved.`,
         trackingSaved ? 'success' : 'warning',
@@ -209,18 +200,23 @@ export function Orders({ notify }) {
   }
 
   async function createSelected() {
-    const targets = rows.filter((order) => selected.has(order.fbpi_order_nr) && orderState(order).key === 'ready' && !hasShipmentId(order, createdShipmentIds))
+    const targets = rows.filter((order) => selected.has(order.fbpi_order_nr) && orderState(order).key === 'ready' && !hasShipmentId(order, createdShipments))
+    const missingShipmentId = targets.find((order) => !shipmentIds[order.fbpi_order_nr]?.trim())
     const missingAwb = targets.find((order) => !awbs[order.fbpi_order_nr]?.trim())
     if (!targets.length) return notify('Select ready-to-ship orders first.', 'warning')
+    if (missingShipmentId) return notify(`Enter an Integration Shipment ID for ${missingShipmentId.fbpi_order_nr}.`, 'warning')
     if (missingAwb) return notify(`Allocate an AWB for ${missingAwb.fbpi_order_nr}.`, 'warning')
-    const payloads = targets.map((order) => createShipmentPayload(order, awbs[order.fbpi_order_nr]))
+    const payloads = targets.map((order) => createShipmentPayload(order, awbs[order.fbpi_order_nr], shipmentIds[order.fbpi_order_nr]))
     const payloadShipmentIds = Object.fromEntries(payloads.map((payload) => [payload.fbpi_order_nr, payload.integration_shipment_nr]))
     const response = await bulkCreate.run(payloads)
     if (response) {
       const results = response.results || []
-      setCreatedShipmentIds((current) => ({
+      setCreatedShipments((current) => ({
         ...current,
-        ...Object.fromEntries(results.filter((item) => item.success).map((item) => [item.fbpi_order_nr, item.integration_shipment_nr || payloadShipmentIds[item.fbpi_order_nr]])),
+        ...Object.fromEntries(results.filter((item) => item.success).map((item) => [item.fbpi_order_nr, {
+          integration_shipment_nr: item.integration_shipment_nr || payloadShipmentIds[item.fbpi_order_nr],
+          awb_nr: item.awb_nr || awbs[item.fbpi_order_nr],
+        }])),
       }))
       setShipmentResults(results)
       setSelected(new Set())
@@ -234,20 +230,21 @@ export function Orders({ notify }) {
   }
 
   const columns = [
-    { key: 'select', label: '', render: (order) => { const selectable = orderState(order).key === 'ready' && !hasShipmentId(order, createdShipmentIds); return <input type="checkbox" aria-label={`Select ${order.fbpi_order_nr}`} checked={selected.has(order.fbpi_order_nr)} disabled={!selectable} onChange={() => toggle(order.fbpi_order_nr)} onClick={(event) => event.stopPropagation()} /> } },
+    { key: 'select', label: '', render: (order) => { const selectable = orderState(order).key === 'ready' && !hasShipmentId(order, createdShipments); return <input type="checkbox" aria-label={`Select ${order.fbpi_order_nr}`} checked={selected.has(order.fbpi_order_nr)} disabled={!selectable} onChange={() => toggle(order.fbpi_order_nr)} onClick={(event) => event.stopPropagation()} /> } },
     { key: 'order', label: 'Order', render: (order) => <button className="table-link" onClick={() => openOrder(order)}>{order.fbpi_order_nr}</button> },
-    { key: 'shipment_id', label: 'Shipment ID', render: (order) => getShipmentId(order, createdShipmentIds) || <span className="muted">—</span> },
+    { key: 'awb', label: 'AWB', render: (order) => <input className="table-input" aria-label={`AWB for ${order.fbpi_order_nr}`} value={awbs[order.fbpi_order_nr] ?? getShipmentAwb(order, createdShipments)} onChange={(event) => setAwbs((current) => ({ ...current, [order.fbpi_order_nr]: event.target.value }))} placeholder="Enter AWB" disabled={orderState(order).key !== 'ready' || hasShipmentId(order, createdShipments)} /> },
+    { key: 'shipment_id', label: 'Integration Shipment ID', render: (order) => { const existing = getShipmentId(order, createdShipments); return existing || <input className="table-input shipment-id-input" aria-label={`Integration Shipment ID for ${order.fbpi_order_nr}`} value={shipmentIds[order.fbpi_order_nr] || ''} onChange={(event) => setShipmentIds((current) => ({ ...current, [order.fbpi_order_nr]: event.target.value }))} placeholder="Enter shipment ID" disabled={orderState(order).key !== 'ready'} /> } },
     { key: 'created', label: 'Created', render: (order) => formatDate(order.order_created_at) },
     { key: 'items', label: 'Items', render: (order) => <div className="sku-stack"><strong>{order.items?.length || 0}</strong><small>{(order.items || []).map((item) => item.partner_sku).join(', ')}</small></div> },
     { key: 'status', label: 'Status', render: (order) => { const state = orderState(order); return <StatusBadge tone={state.tone}>{state.label}</StatusBadge> } },
     { key: 'warehouse', label: 'Warehouse', render: (order) => order.warehouse_code || '—' },
-    { key: 'awb', label: 'AWB', render: (order) => <input className="table-input" value={awbs[order.fbpi_order_nr] || ''} onChange={(event) => setAwbs((current) => ({ ...current, [order.fbpi_order_nr]: event.target.value }))} placeholder="Enter AWB" disabled={orderState(order).key !== 'ready' || hasShipmentId(order, createdShipmentIds)} /> },
-    { key: 'shipment', label: 'Shipment', render: (order) => hasShipmentId(order, createdShipmentIds) ? <StatusBadge tone="success">Created</StatusBadge> : <span className="muted">Not created</span> },
-    { key: 'actions', label: 'Actions', render: (order) => <button className="primary-button compact-button" disabled={orderState(order).key !== 'ready' || hasShipmentId(order, createdShipmentIds) || !awbs[order.fbpi_order_nr]?.trim() || busyOrders.has(order.fbpi_order_nr)} onClick={() => createOne(order)}>{busyOrders.has(order.fbpi_order_nr) ? 'Creating…' : 'Create shipment'}</button> },
+    { key: 'shipment', label: 'Shipment', render: (order) => hasShipmentId(order, createdShipments) ? <StatusBadge tone="success">Created</StatusBadge> : <span className="muted">Not created</span> },
+    { key: 'actions', label: 'Actions', render: (order) => <button className="primary-button compact-button" disabled={orderState(order).key !== 'ready' || hasShipmentId(order, createdShipments) || !shipmentIds[order.fbpi_order_nr]?.trim() || !awbs[order.fbpi_order_nr]?.trim() || busyOrders.has(order.fbpi_order_nr)} onClick={() => createOne(order)}>{busyOrders.has(order.fbpi_order_nr) ? 'Creating…' : 'Create shipment'}</button> },
   ]
 
   const resultColumns = [
     { key: 'fbpi_order_nr', label: 'Order' },
+    { key: 'awb_nr', label: 'AWB' },
     { key: 'integration_shipment_nr', label: 'Shipment number' },
     { key: 'success', label: 'Result', render: (row) => <StatusBadge tone={row.success ? 'success' : 'danger'}>{row.success ? 'Created' : 'Failed'}</StatusBadge> },
     { key: 'message', label: 'Message', render: (row) => row.message || (row.connecto_tracking_saved === false ? 'Shipment accepted by Noon, but ID storage failed' : 'Shipment accepted by Noon') },

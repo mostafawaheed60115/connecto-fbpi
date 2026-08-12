@@ -9,6 +9,10 @@ Core operations include:
 - Warehouse stock and country pricing in one inventory workspace.
 - Return-reference lookup and configurable report exports.
 
+## Frontend integration contract
+
+See [New Noon + FBPI frontend integration](docs/new-noon-fbpi-frontend-integration.md) for the production multi-user API contract, request/response examples, fallback behavior, and per-user data-isolation requirements.
+
 ## Run locally
 
 ```bash
@@ -27,6 +31,8 @@ VITE_API_BASE_URL=https://test.connecto-me.com/service1
 
 Vercel builds this project with `npm run build` and publishes `dist/`.
 
-## Authentication and CORS
+## Standalone test-dashboard authentication
 
 The password screen creates a short-lived backend session token, which is kept in `sessionStorage` and sent as a bearer token. Configure `NOON_DASHBOARD_PASSWORD` and `NOON_DASHBOARD_USER_ID` only in the backend environment; never expose Noon credentials, JWT secrets, or access tokens through `VITE_*` variables.
+
+The production multi-user frontend must use the main Connecto login token instead. See the integration contract above.

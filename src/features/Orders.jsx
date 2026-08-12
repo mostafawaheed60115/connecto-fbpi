@@ -4,7 +4,7 @@ import { useAsyncAction } from '../hooks/useAsyncAction'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import { extractAwbs, formatDate, orderState } from '../utils/format'
 import { DataTable, ErrorNotice, Icon, Modal, Panel, StatusBadge } from '../components/ui'
-import { createShipmentPayload, getProductSkus, getShipmentAwb, getShipmentIds, getShipmentRecords, suggestShipmentNumber } from './shipmentWorkflow.js'
+import { createShipmentPayload, getProductSkus, getShipmentAwb, getShipmentIds, getShipmentRecords, isUserScopedOrdersResponse, suggestShipmentNumber } from './shipmentWorkflow.js'
 
 function getShipmentId(order, createdShipments) {
   return getShipmentIds(order, createdShipments).join(', ') || null
@@ -77,8 +77,17 @@ export function Orders({ notify }) {
   useEffect(() => { inbox.run() }, [inbox.run])
   useAutoRefresh(() => inbox.run())
 
-  const rows = useMemo(() => (inbox.result?.orders || []).filter((entry) => entry.order).map((entry) => ({ ...entry.order, notification: entry })), [inbox.result])
   const usingFallback = inbox.result?.degraded || inbox.result?.source === 'DATABASE_FALLBACK'
+  const userScopedStorage = isUserScopedOrdersResponse(inbox.result)
+  const rows = useMemo(() => {
+    if (usingFallback && !userScopedStorage) return []
+    return (inbox.result?.orders || [])
+      .filter((entry) => entry.order)
+      .map((entry) => ({ ...entry.order, notification: entry }))
+  }, [inbox.result, usingFallback, userScopedStorage])
+  const scopeError = usingFallback && !userScopedStorage
+    ? new Error('Stored orders were not returned with verified user ownership. Refresh after the backend update completes.')
+    : null
 
   useEffect(() => {
     setShipmentIds((current) => {
@@ -266,13 +275,13 @@ export function Orders({ notify }) {
       <button className={status === 'cancelled' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('cancelled')}><span>Cancelled</span><strong>{counts.cancelled}</strong></button>
     </div>
     <Panel title="Orders" description={usingFallback ? 'Showing the latest stored order snapshot while Noon is unavailable.' : "Loaded and paginated directly from Noon's FBPI warehouse order list."} actions={<button className="secondary-button" onClick={() => inbox.run()} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh orders'}</button>}>
-      {usingFallback ? <div className="fallback-notice" role="status"><Icon name="alert" size={18} /><div><strong>Noon orders are temporarily unavailable</strong><span>Showing database data from {inbox.result?.snapshot_updated_at ? formatDate(inbox.result.snapshot_updated_at) : 'the latest successful sync'}. Shipment IDs, AWBs, and product SKUs are mapped from stored records.</span></div></div> : null}
+      {usingFallback && userScopedStorage ? <div className="fallback-notice" role="status"><Icon name="alert" size={18} /><div><strong>Noon orders are temporarily unavailable</strong><span>Showing only this signed-in user's database records from {inbox.result?.snapshot_updated_at ? formatDate(inbox.result.snapshot_updated_at) : 'the latest successful sync'}. Shipment IDs, AWBs, and product SKUs remain user-scoped.</span></div></div> : null}
       <div className="orders-toolbar">
         <div className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search order, SKU, merchant, or warehouse" /></div>
         <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="pending">Pending acknowledgment</option><option value="ready">Ready to ship</option><option value="out_of_stock">Out of stock</option><option value="attention">Partially unavailable</option><option value="processing">Processing</option><option value="shipped">Shipped</option><option value="cancelled">Cancelled</option></select>
         <form className="manual-order-form" onSubmit={addOrder}><input value={manualOrder} onChange={(event) => setManualOrder(event.target.value)} placeholder="Open an order number" /><button className="secondary-button" disabled={!manualOrder.trim() || fetchOrder.busy}>{fetchOrder.busy ? 'Opening…' : 'Open order'}</button></form>
       </div>
-      <ErrorNotice error={inbox.error || fetchOrder.error || updateOrder.error || markRead.error || allocate.error || bulkCreate.error} />
+      <ErrorNotice error={scopeError || inbox.error || fetchOrder.error || updateOrder.error || markRead.error || allocate.error || bulkCreate.error} />
       {selected.size ? <div className="bulk-action-bar"><strong>{selected.size} selected</strong><button className="secondary-button" onClick={allocateForSelection} disabled={allocate.busy}>{allocate.busy ? 'Allocating…' : 'Allocate AWBs'}</button><button className="primary-button" onClick={createSelected} disabled={bulkCreate.busy}>{bulkCreate.busy ? 'Creating…' : `Create shipments (${selected.size})`}</button><button className="icon-button" onClick={() => setSelected(new Set())} aria-label="Clear selection"><Icon name="close" /></button></div> : null}
       {inbox.busy && !inbox.result ? <div className="loading-state">Fetching all order data from Noon…</div> : <DataTable columns={columns} rows={filtered} rowKey={(order) => order.fbpi_order_nr} emptyTitle="No matching orders" />}
     </Panel>

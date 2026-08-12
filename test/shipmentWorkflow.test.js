@@ -8,6 +8,7 @@ import {
   getShipmentAwb,
   getShipmentIds,
   getShipmentRecords,
+  isUserScopedOrdersResponse,
   suggestShipmentNumber,
 } from '../src/features/shipmentWorkflow.js'
 
@@ -65,6 +66,12 @@ test('maps stored and item-level product SKUs without duplicates', () => {
     ],
   }
   assert.deepEqual(getProductSkus(storedOrder), ['SC-01', 'MAT-02', 'Hub-201'])
+})
+
+test('accepts fallback data only when explicit user ownership is present', () => {
+  assert.equal(isUserScopedOrdersResponse({ storage_scope: { type: 'USER', user_id: 35 } }), true)
+  assert.equal(isUserScopedOrdersResponse({ storage_scope: { type: 'PROJECT', user_id: 35 } }), false)
+  assert.equal(isUserScopedOrdersResponse({ source: 'DATABASE_FALLBACK' }), false)
 })
 
 test('renders the AWB value immediately before the shipment ID field', () => {

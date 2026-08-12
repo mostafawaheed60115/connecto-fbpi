@@ -54,3 +54,8 @@ export function getProductSkus(order) {
   const itemSkus = (order.items || []).map((item) => item.partner_sku)
   return [...new Set([...storedSkus, ...itemSkus].filter(Boolean))]
 }
+
+export function isUserScopedOrdersResponse(response) {
+  return response?.storage_scope?.type === 'USER'
+    && Number.isInteger(response.storage_scope.user_id)
+}

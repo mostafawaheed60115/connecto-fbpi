@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 
 import {
   createShipmentPayload,
+  getProductSkus,
   getShipmentAwb,
   getShipmentIds,
   getShipmentRecords,
@@ -52,6 +53,18 @@ test('deduplicates legacy IDs without losing the persisted AWB', () => {
   }
   assert.deepEqual(getShipmentIds(refreshedOrder), ['MANUAL-SHIP-35'])
   assert.equal(getShipmentAwb(refreshedOrder), 'PH82114579236E')
+})
+
+test('maps stored and item-level product SKUs without duplicates', () => {
+  const storedOrder = {
+    ...order,
+    product_skus: ['SC-01', 'MAT-02'],
+    items: [
+      { mp_item_nr: '1', partner_sku: 'SC-01' },
+      { mp_item_nr: '2', partner_sku: 'Hub-201' },
+    ],
+  }
+  assert.deepEqual(getProductSkus(storedOrder), ['SC-01', 'MAT-02', 'Hub-201'])
 })
 
 test('renders the AWB value immediately before the shipment ID field', () => {

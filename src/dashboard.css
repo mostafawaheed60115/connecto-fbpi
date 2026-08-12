@@ -17,3 +17,5 @@
 
 .dashboard-content input.awb-input{width:155px;color:#153a70;font-size:13px;font-weight:800;letter-spacing:.015em}
 .shipment-id-input{width:260px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.fallback-notice{display:flex;align-items:flex-start;gap:11px;margin-bottom:14px;padding:12px 14px;border:1px solid #f0cf8d;border-radius:9px;background:#fff9eb;color:#9a640b}.fallback-notice>svg{flex:0 0 auto;margin-top:1px}.fallback-notice>div{display:flex;flex-direction:column;gap:3px}.fallback-notice strong{font-size:12px}.fallback-notice span{color:#806b45;font-size:10px;line-height:1.5}.order-mapping-summary{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px}.order-mapping-summary>div{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid #dce7f4;border-radius:9px;background:#f5f9ff}.order-mapping-summary span{color:#718197;font-size:9px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}.order-mapping-summary strong{color:#263950;font-size:11px}.order-mapping-summary small{color:#6f8299;font-weight:500}
+@media(max-width:750px){.order-mapping-summary{grid-template-columns:1fr}}

@@ -48,3 +48,9 @@ export function getShipmentIds(order, createdShipments = {}) {
 export function getShipmentAwb(order, createdShipments = {}) {
   return getShipmentRecords(order, createdShipments).find((item) => item.awb_nr)?.awb_nr || ''
 }
+
+export function getProductSkus(order) {
+  const storedSkus = Array.isArray(order.product_skus) ? order.product_skus : []
+  const itemSkus = (order.items || []).map((item) => item.partner_sku)
+  return [...new Set([...storedSkus, ...itemSkus].filter(Boolean))]
+}

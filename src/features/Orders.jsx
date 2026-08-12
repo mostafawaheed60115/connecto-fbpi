@@ -4,7 +4,7 @@ import { useAsyncAction } from '../hooks/useAsyncAction'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import { extractAwbs, formatDate, orderState } from '../utils/format'
 import { DataTable, ErrorNotice, Icon, Modal, Panel, StatusBadge } from '../components/ui'
-import { createShipmentPayload, getShipmentAwb, getShipmentIds, suggestShipmentNumber } from './shipmentWorkflow.js'
+import { createShipmentPayload, getProductSkus, getShipmentAwb, getShipmentIds, getShipmentRecords, suggestShipmentNumber } from './shipmentWorkflow.js'
 
 function getShipmentId(order, createdShipments) {
   return getShipmentIds(order, createdShipments).join(', ') || null
@@ -27,6 +27,8 @@ function canMarkOutOfStock(item) {
 
 function OrderDetails({ order, onClose, onMarkOutOfStock, busyItemNr }) {
   const state = orderState(order)
+  const shipments = getShipmentRecords(order)
+  const productSkus = getProductSkus(order)
   const itemColumns = [
     { key: 'actions', label: 'Actions', render: (row) => canMarkOutOfStock(row) ? <button className="secondary-button compact-button" disabled={busyItemNr === row.mp_item_nr} onClick={() => onMarkOutOfStock(order, row)}>{busyItemNr === row.mp_item_nr ? 'Updating…' : 'Mark out of stock'}</button> : <span className="muted">No action</span> },
     { key: 'mp_item_nr', label: 'Item number' },
@@ -43,6 +45,10 @@ function OrderDetails({ order, onClose, onMarkOutOfStock, busyItemNr }) {
       <div><span>Merchant</span><strong>{order.merchant_code || '—'}</strong></div>
       <div><span>Country</span><strong>{order.customer_country_code?.toUpperCase() || '—'}</strong></div>
       <div><span>Currency</span><strong>{order.currency_code?.toUpperCase() || '—'}</strong></div>
+    </div>
+    <div className="order-mapping-summary">
+      <div><span>Product SKUs</span><strong>{productSkus.join(', ') || '—'}</strong></div>
+      <div><span>Shipment / AWB</span>{shipments.length ? shipments.map((shipment) => <strong key={shipment.integration_shipment_nr}>{shipment.integration_shipment_nr} <small>→ {shipment.awb_nr || 'AWB not stored'}</small></strong>) : <strong>Not created</strong>}</div>
     </div>
     <h4 className="section-label">Line items</h4>
     <DataTable columns={itemColumns} rows={order.items || []} rowKey={(row) => row.mp_item_nr} />
@@ -72,6 +78,7 @@ export function Orders({ notify }) {
   useAutoRefresh(() => inbox.run())
 
   const rows = useMemo(() => (inbox.result?.orders || []).filter((entry) => entry.order).map((entry) => ({ ...entry.order, notification: entry })), [inbox.result])
+  const usingFallback = inbox.result?.degraded || inbox.result?.source === 'DATABASE_FALLBACK'
 
   useEffect(() => {
     setShipmentIds((current) => {
@@ -99,7 +106,7 @@ export function Orders({ notify }) {
   const filtered = useMemo(() => rows.filter((order) => {
     const state = orderState(order)
     const matchesStatus = status === 'all' || state.key === status
-    const haystack = `${order.fbpi_order_nr} ${order.merchant_code} ${order.warehouse_code} ${(order.items || []).map((item) => item.partner_sku).join(' ')}`.toLowerCase()
+    const haystack = `${order.fbpi_order_nr} ${order.merchant_code} ${order.warehouse_code} ${getProductSkus(order).join(' ')}`.toLowerCase()
     return matchesStatus && haystack.includes(search.trim().toLowerCase())
   }), [rows, search, status])
 
@@ -235,7 +242,7 @@ export function Orders({ notify }) {
     { key: 'awb', label: 'AWB', render: (order) => <input className="table-input awb-input" aria-label={`AWB for ${order.fbpi_order_nr}`} value={awbs[order.fbpi_order_nr] ?? getShipmentAwb(order, createdShipments)} onChange={(event) => setAwbs((current) => ({ ...current, [order.fbpi_order_nr]: event.target.value }))} placeholder="Enter AWB" disabled={orderState(order).key !== 'ready' || hasShipmentId(order, createdShipments)} /> },
     { key: 'shipment_id', label: 'Integration Shipment ID', render: (order) => { const existing = getShipmentId(order, createdShipments); return existing || <input className="table-input shipment-id-input" aria-label={`Integration Shipment ID for ${order.fbpi_order_nr}`} value={shipmentIds[order.fbpi_order_nr] || ''} onChange={(event) => setShipmentIds((current) => ({ ...current, [order.fbpi_order_nr]: event.target.value }))} placeholder="Enter shipment ID" disabled={orderState(order).key !== 'ready'} /> } },
     { key: 'created', label: 'Created', render: (order) => formatDate(order.order_created_at) },
-    { key: 'items', label: 'Items', render: (order) => <div className="sku-stack"><strong>{order.items?.length || 0}</strong><small>{(order.items || []).map((item) => item.partner_sku).join(', ')}</small></div> },
+    { key: 'items', label: 'Items / SKUs', render: (order) => <div className="sku-stack"><strong>{order.items?.length || 0} item{order.items?.length === 1 ? '' : 's'}</strong><small>{getProductSkus(order).join(', ') || 'No SKU stored'}</small></div> },
     { key: 'status', label: 'Status', render: (order) => { const state = orderState(order); return <StatusBadge tone={state.tone}>{state.label}</StatusBadge> } },
     { key: 'warehouse', label: 'Warehouse', render: (order) => order.warehouse_code || '—' },
     { key: 'shipment', label: 'Shipment', render: (order) => hasShipmentId(order, createdShipments) ? <StatusBadge tone="success">Created</StatusBadge> : <span className="muted">Not created</span> },
@@ -258,7 +265,8 @@ export function Orders({ notify }) {
       <button className={status === 'shipped' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('shipped')}><span>Shipped</span><strong>{counts.shipped}</strong></button>
       <button className={status === 'cancelled' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('cancelled')}><span>Cancelled</span><strong>{counts.cancelled}</strong></button>
     </div>
-    <Panel title="Orders" description="Loaded and paginated directly from Noon's FBPI warehouse order list." actions={<button className="secondary-button" onClick={() => inbox.run()} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh orders'}</button>}>
+    <Panel title="Orders" description={usingFallback ? 'Showing the latest stored order snapshot while Noon is unavailable.' : "Loaded and paginated directly from Noon's FBPI warehouse order list."} actions={<button className="secondary-button" onClick={() => inbox.run()} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh orders'}</button>}>
+      {usingFallback ? <div className="fallback-notice" role="status"><Icon name="alert" size={18} /><div><strong>Noon orders are temporarily unavailable</strong><span>Showing database data from {inbox.result?.snapshot_updated_at ? formatDate(inbox.result.snapshot_updated_at) : 'the latest successful sync'}. Shipment IDs, AWBs, and product SKUs are mapped from stored records.</span></div></div> : null}
       <div className="orders-toolbar">
         <div className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search order, SKU, merchant, or warehouse" /></div>
         <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="pending">Pending acknowledgment</option><option value="ready">Ready to ship</option><option value="out_of_stock">Out of stock</option><option value="attention">Partially unavailable</option><option value="processing">Processing</option><option value="shipped">Shipped</option><option value="cancelled">Cancelled</option></select>

@@ -6,9 +6,24 @@ export function firstGeneratedSku(response) {
   return sku ? sku.trim() : ''
 }
 
-export function generatedSkuFailureMessage(response) {
-  if (!isFailureStatus(response?.status)) return ''
-  return displayValue(response.status?.message) || displayValue(response.status?.status_code) || 'Noon rejected the SKU generation request.'
+export function extractGeneratedSkus(response) {
+  if (!Array.isArray(response?.skus)) return []
+  return response.skus
+    .map((sku) => {
+      if (typeof sku === 'string') return sku.trim()
+      if (sku && typeof sku.value === 'string') return sku.value.trim()
+      return ''
+    })
+    .filter(Boolean)
+}
+
+export function parseNskuList(input = '') {
+  if (Array.isArray(input)) return input.map((val) => String(val || '').trim()).filter(Boolean)
+  if (typeof input !== 'string') return []
+  return input
+    .split(/[\r\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
 
 export function skuMappingItem(partnerSku, nskuChild, forceMap = false) {
@@ -17,6 +32,29 @@ export function skuMappingItem(partnerSku, nskuChild, forceMap = false) {
     nsku_child: String(nskuChild || '').trim(),
     ...(forceMap ? { force_map: true } : {}),
   }
+}
+
+export function buildBatchMappingItems(skus = [], nskus = [], forceMap = false) {
+  const cleanSkus = (Array.isArray(skus) ? skus : [skus]).map((s) => String(s || '').trim()).filter(Boolean)
+  const cleanNskus = (Array.isArray(nskus) ? nskus : [nskus]).map((n) => String(n || '').trim()).filter(Boolean)
+
+  if (!cleanSkus.length) return []
+  if (!cleanNskus.length) {
+    return cleanSkus.map((sku) => skuMappingItem(sku, '', forceMap))
+  }
+
+  // If one NSKU is given for multiple SKUs, map each SKU to that target NSKU
+  if (cleanNskus.length === 1 && cleanSkus.length > 1) {
+    return cleanSkus.map((sku) => skuMappingItem(sku, cleanNskus[0], forceMap))
+  }
+
+  // Otherwise, match 1-to-1 by index
+  return cleanSkus.map((sku, index) => skuMappingItem(sku, cleanNskus[index] || '', forceMap))
+}
+
+export function generatedSkuFailureMessage(response) {
+  if (!isFailureStatus(response?.status)) return ''
+  return displayValue(response.status?.message) || displayValue(response.status?.status_code) || 'Noon rejected the SKU generation request.'
 }
 
 export function skuMappingFailureMessage(response) {

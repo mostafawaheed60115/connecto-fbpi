@@ -2,7 +2,15 @@ import { useDeferredValue, useMemo, useState } from 'react'
 import { DEFAULT_SKU, noonApi } from '../api'
 import { useAsyncAction } from '../hooks/useAsyncAction'
 import { categoryLabel, displayValue, humanize, isFailureStatus } from '../utils/format'
-import { firstGeneratedSku, generatedSkuFailureMessage, skuMappingFailureMessage, skuMappingItem } from '../utils/skuWorkflow'
+import {
+  buildBatchMappingItems,
+  extractGeneratedSkus,
+  firstGeneratedSku,
+  generatedSkuFailureMessage,
+  parseNskuList,
+  skuMappingFailureMessage,
+  skuMappingItem,
+} from '../utils/skuWorkflow'
 import { DataTable, EmptyState, ErrorNotice, Field, Icon, Modal, Panel, StatusBadge, Tabs } from '../components/ui'
 
 const STEPS = ['Product identity', 'Category & attributes', 'Variants & media', 'Review & submit']
@@ -204,68 +212,336 @@ function SkuMapping({ notify }) {
 function GenerateSkuMapping({ notify }) {
   const generateSkus = useAsyncAction(noonApi.generateSkus)
   const mapSkus = useAsyncAction(noonApi.mapSkus)
-  const [nskuChild, setNskuChild] = useState('')
+  const [mode, setMode] = useState('single')
+  const [quantity, setQuantity] = useState(1)
+  const [singleNsku, setSingleNsku] = useState('')
+  const [bulkNskusText, setBulkNskusText] = useState('')
   const [forceMap, setForceMap] = useState(false)
-  const [generatedSku, setGeneratedSku] = useState('')
+  const [generatedList, setGeneratedList] = useState([])
+  const [hasGenerated, setHasGenerated] = useState(false)
+
   const busy = generateSkus.busy || mapSkus.busy
   const generationStatus = generateSkus.result?.status
   const generationFailure = generatedSkuFailureMessage(generateSkus.result)
-  const mappingRows = mapSkus.result?.items || []
-  const mapped = mappingRows.some((item) => item.partner_sku === generatedSku && !isFailureStatus(item.status))
-  const targetNsku = displayValue(mappingRows[0]?.nsku_child || nskuChild.trim())
-  const resultColumns = [
-    { key: 'partner_sku', label: 'Seller SKU', render: (row) => displayValue(row.partner_sku) },
-    { key: 'nsku_child', label: 'Noon NSKU child', render: (row) => displayValue(row.nsku_child) },
-    { key: 'status', label: 'API status', render: (row) => <StatusBadge tone={isFailureStatus(row.status) ? 'warning' : 'success'}>{displayValue(row.status?.status_code) || 'OK'}</StatusBadge> },
-    { key: 'message', label: 'Message', render: (row) => displayValue(row.status?.message) },
-  ]
 
-  async function mapGeneratedSku(sku) {
-    const response = await mapSkus.run([skuMappingItem(sku, nskuChild, forceMap)])
-    if (!response) return null
-    const failure = skuMappingFailureMessage(response)
-    if (failure) {
-      notify(`SKU ${sku} generated, but mapping to ${nskuChild.trim()} failed: ${failure}`, 'warning')
-    } else {
-      notify(`SKU ${sku} generated and mapped to ${nskuChild.trim()}.`)
+  const parsedBulkNskus = useMemo(() => parseNskuList(bulkNskusText), [bulkNskusText])
+
+  function handleModeChange(newMode) {
+    setMode(newMode)
+    if (newMode === 'single') {
+      setQuantity(1)
+    } else if (parsedBulkNskus.length > 1) {
+      setQuantity(parsedBulkNskus.length)
+    } else if (quantity === 1) {
+      setQuantity(5)
     }
-    return response
   }
 
-  async function submit(event) {
-    event.preventDefault()
-    if (!nskuChild.trim()) return notify('Enter the Noon NSKU child to map the generated SKU to.', 'warning')
-    if (generatedSku) return mapGeneratedSku(generatedSku)
+  function handleBulkTextChange(text) {
+    setBulkNskusText(text)
+    const list = parseNskuList(text)
+    if (list.length > 0) {
+      setQuantity(Math.min(200, Math.max(1, list.length)))
+    }
+  }
+
+  function updateRowNsku(index, newNsku) {
+    setGeneratedList((current) =>
+      current.map((item, idx) => (idx === index ? { ...item, nsku_child: newNsku } : item))
+    )
+  }
+
+  function applyMappingResults(response) {
+    const resultItems = Array.isArray(response?.items) ? response.items : []
+    const resultMap = new Map(resultItems.map((item) => [item.partner_sku, item]))
+
+    setGeneratedList((current) =>
+      current.map((row) => {
+        const res = resultMap.get(row.partner_sku)
+        if (res) {
+          const resNsku = typeof res.nsku_child === 'object' ? res.nsku_child?.value : res.nsku_child
+          return {
+            ...row,
+            nsku_child: resNsku || row.nsku_child,
+            status: res.status,
+            message: res.status?.message || (isFailureStatus(res.status) ? 'Rejected' : 'OK'),
+          }
+        }
+        return row
+      })
+    )
+
+    const failed = resultItems.filter((item) => isFailureStatus(item.status))
+    if (failed.length) {
+      const firstMsg = failed[0]?.status?.message
+      notify(`${failed.length} of ${resultItems.length} SKU mapping${resultItems.length === 1 ? '' : 's'} rejected by Noon${firstMsg ? `: ${firstMsg}` : '.'}`, 'warning')
+    } else {
+      notify(`Successfully mapped ${resultItems.length} SKU${resultItems.length === 1 ? '' : 's'} to Noon NSKUs.`)
+    }
+  }
+
+  async function onGenerateOnly(event) {
+    if (event) event.preventDefault()
+    const targetQty = mode === 'single' ? 1 : Math.max(1, Math.min(200, Number(quantity) || 1))
     mapSkus.reset()
-    const response = await generateSkus.run(1)
+    const response = await generateSkus.run(targetQty)
     if (!response) return
     const failure = generatedSkuFailureMessage(response)
-    if (failure) return notify(`Noon did not generate a SKU: ${failure}`, 'warning')
-    const sku = firstGeneratedSku(response)
-    if (!sku) return notify('Noon did not return a generated seller SKU.', 'warning')
-    setGeneratedSku(sku)
-    await mapGeneratedSku(sku)
+    if (failure) return notify(`Noon did not generate SKUs: ${failure}`, 'warning')
+
+    const skus = extractGeneratedSkus(response)
+    if (!skus.length) return notify('Noon did not return generated seller SKUs.', 'warning')
+
+    const targetNskus = mode === 'single' ? (singleNsku.trim() ? [singleNsku.trim()] : []) : parsedBulkNskus
+    const items = buildBatchMappingItems(skus, targetNskus, forceMap)
+    setGeneratedList(items.map((it) => ({ partner_sku: it.partner_sku, nsku_child: it.nsku_child })))
+    setHasGenerated(true)
+    notify(`${skus.length} SKU${skus.length === 1 ? '' : 's'} generated. Review and complete mapping below.`)
+  }
+
+  async function onGenerateAndMap(event) {
+    if (event) event.preventDefault()
+    const targetNskus = mode === 'single' ? (singleNsku.trim() ? [singleNsku.trim()] : []) : parsedBulkNskus
+    if (!targetNskus.length) {
+      return notify('Enter at least one Noon child NSKU before generating and mapping.', 'warning')
+    }
+
+    const targetQty = mode === 'single' ? 1 : Math.max(1, Math.min(200, Number(quantity) || targetNskus.length))
+    mapSkus.reset()
+    const genResponse = await generateSkus.run(targetQty)
+    if (!genResponse) return
+    const failure = generatedSkuFailureMessage(genResponse)
+    if (failure) return notify(`Noon did not generate SKUs: ${failure}`, 'warning')
+
+    const skus = extractGeneratedSkus(genResponse)
+    if (!skus.length) return notify('Noon did not return generated seller SKUs.', 'warning')
+
+    const items = buildBatchMappingItems(skus, targetNskus, forceMap)
+    setGeneratedList(items.map((it) => ({ partner_sku: it.partner_sku, nsku_child: it.nsku_child })))
+    setHasGenerated(true)
+
+    const mappable = items
+      .filter((it) => it.nsku_child && it.nsku_child.trim())
+      .map((it) => skuMappingItem(it.partner_sku, it.nsku_child, forceMap))
+
+    if (!mappable.length) {
+      return notify(`${skus.length} SKUs generated. Please enter child NSKUs to complete mapping.`)
+    }
+
+    const mapResponse = await mapSkus.run(mappable)
+    if (mapResponse) {
+      applyMappingResults(mapResponse)
+    }
+  }
+
+  async function onMapGeneratedList(event) {
+    if (event) event.preventDefault()
+    const mappable = generatedList
+      .filter((row) => row.partner_sku && row.nsku_child && row.nsku_child.trim())
+      .map((row) => skuMappingItem(row.partner_sku, row.nsku_child, forceMap))
+
+    if (!mappable.length) {
+      return notify('Enter the Noon NSKU child for generated SKUs before mapping.', 'warning')
+    }
+
+    const response = await mapSkus.run(mappable)
+    if (response) {
+      applyMappingResults(response)
+    }
   }
 
   function startOver() {
-    setGeneratedSku('')
+    setGeneratedList([])
+    setHasGenerated(false)
+    setSingleNsku('')
+    setBulkNskusText('')
     generateSkus.reset()
     mapSkus.reset()
   }
 
-  return <Panel title="Generate and map a seller SKU" description="Generate a new seller SKU from Noon, then map it to an existing child NSKU. Generation is preserved if mapping needs to be retried.">
-    <form className="form-grid" onSubmit={submit}>
-      <Field label="Noon NSKU child" hint="The existing child NSKU this new seller SKU should map to."><input value={nskuChild} onChange={(event) => setNskuChild(event.target.value)} disabled={busy} /></Field>
-      <label className="toggle-field"><input type="checkbox" checked={forceMap} onChange={(event) => setForceMap(event.target.checked)} disabled={busy} /><span><strong>Force map</strong><small>Override an existing mapping</small></span></label>
-      <div className="button-row sku-map-actions generate-sku-actions">
-        {generatedSku ? <button type="button" className="text-button" onClick={startOver} disabled={busy}><Icon name="plus" size={15} /> Generate a different SKU</button> : null}
-        <button className="primary-button" disabled={!nskuChild.trim() || busy || mapped}>{generateSkus.busy ? 'Generating.' : mapSkus.busy ? 'Mapping.' : mapped ? 'Mapped' : generatedSku ? 'Retry mapping' : 'Generate and map'}</button>
+  const allMappedSuccessfully = generatedList.length > 0 && generatedList.every((row) => row.status && !isFailureStatus(row.status))
+  const anyTargetNsku = mode === 'single' ? singleNsku.trim() : parsedBulkNskus.length > 0
+
+  const resultColumns = [
+    { key: 'index', label: '#', render: (_, index) => index + 1 },
+    { key: 'partner_sku', label: 'Generated Seller SKU', render: (row) => <code>{row.partner_sku}</code> },
+    {
+      key: 'nsku_child',
+      label: 'Noon NSKU child',
+      render: (row, index) =>
+        row.status && !isFailureStatus(row.status) ? (
+          displayValue(row.nsku_child)
+        ) : (
+          <input
+            className="table-input"
+            value={row.nsku_child || ''}
+            onChange={(e) => updateRowNsku(index, e.target.value)}
+            placeholder="Enter child NSKU"
+            disabled={busy}
+          />
+        ),
+    },
+    {
+      key: 'status',
+      label: 'Status',
+      render: (row) =>
+        row.status ? (
+          <StatusBadge tone={isFailureStatus(row.status) ? 'warning' : 'success'}>
+            {row.status?.status_code || 'OK'}
+          </StatusBadge>
+        ) : (
+          <span className="muted">Ready to map</span>
+        ),
+    },
+    {
+      key: 'message',
+      label: 'Message',
+      render: (row) => displayValue(row.message || row.status?.message || '—'),
+    },
+  ]
+
+  return (
+    <Panel
+      title="Generate and map seller SKUs"
+      description="Generate 1 or bulk seller SKUs from Noon, then map them directly to Noon child NSKUs. Generated SKUs remain preserved for retrying mappings."
+    >
+      <div className="sku-mode-switch">
+        <button
+          type="button"
+          className={`sku-mode-btn ${mode === 'single' ? 'active' : ''}`}
+          onClick={() => handleModeChange('single')}
+          disabled={busy}
+        >
+          Single SKU (1)
+        </button>
+        <button
+          type="button"
+          className={`sku-mode-btn ${mode === 'bulk' ? 'active' : ''}`}
+          onClick={() => handleModeChange('bulk')}
+          disabled={busy}
+        >
+          Bulk SKUs (2 - 200)
+        </button>
       </div>
-    </form>
-    <ErrorNotice error={generateSkus.error || mapSkus.error || (generationFailure ? { message: generationFailure } : null)} />
-    {generatedSku ? <div className="success-summary"><div><span>Generated seller SKU</span><strong>{generatedSku}</strong></div><div><span>Generation status</span><StatusBadge tone={isFailureStatus(generationStatus) ? 'warning' : 'success'}>{displayValue(generationStatus?.status_code) || 'OK'}</StatusBadge></div><div><span>Target NSKU</span><strong>{targetNsku || 'Not set'}</strong></div></div> : null}
-    <DataTable columns={resultColumns} rows={mappingRows} rowKey={(row, index) => `${row.partner_sku}-${index}`} emptyTitle="No generated SKU mapping yet" />
-  </Panel>
+
+      <form className="form-grid" onSubmit={hasGenerated ? onMapGeneratedList : onGenerateAndMap}>
+        {mode === 'single' ? (
+          <Field label="Noon NSKU child" hint="The existing child NSKU this new seller SKU should map to.">
+            <input
+              value={singleNsku}
+              onChange={(e) => setSingleNsku(e.target.value)}
+              placeholder="e.g. N12345678A"
+              disabled={busy}
+            />
+          </Field>
+        ) : (
+          <>
+            <Field label="Quantity to generate" hint="Noon allows 1 to 200 SKUs per request.">
+              <input
+                type="number"
+                min="1"
+                max="200"
+                value={quantity}
+                onChange={(e) => setQuantity(Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
+                disabled={busy}
+              />
+            </Field>
+            <Field
+              label="Target child NSKUs (Bulk)"
+              hint={`${parsedBulkNskus.length} NSKU${parsedBulkNskus.length === 1 ? '' : 's'} detected. Paste one per line or comma-separated.`}
+            >
+              <textarea
+                className="sku-bulk-textarea"
+                value={bulkNskusText}
+                onChange={(e) => handleBulkTextChange(e.target.value)}
+                placeholder="N12345678A&#10;N12345679A&#10;N12345680A"
+                disabled={busy}
+              />
+            </Field>
+          </>
+        )}
+
+        <label className="toggle-field">
+          <input
+            type="checkbox"
+            checked={forceMap}
+            onChange={(e) => setForceMap(e.target.checked)}
+            disabled={busy}
+          />
+          <span>
+            <strong>Force map</strong>
+            <small>Override existing SKU mappings</small>
+          </span>
+        </label>
+
+        <div className="button-row sku-map-actions generate-sku-actions">
+          {hasGenerated ? (
+            <button type="button" className="text-button" onClick={startOver} disabled={busy}>
+              <Icon name="plus" size={15} /> Start over / Generate new SKUs
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onGenerateOnly}
+              disabled={busy}
+            >
+              {generateSkus.busy ? 'Generating…' : mode === 'single' ? 'Generate 1 SKU only' : `Generate ${quantity} SKUs only`}
+            </button>
+          )}
+
+          {hasGenerated ? (
+            <button
+              type="button"
+              className="primary-button"
+              onClick={onMapGeneratedList}
+              disabled={busy || allMappedSuccessfully || !generatedList.length}
+            >
+              {mapSkus.busy ? 'Mapping…' : allMappedSuccessfully ? 'All Mapped' : 'Map generated SKUs to NSKUs'}
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={busy || !anyTargetNsku}
+            >
+              {generateSkus.busy ? 'Generating…' : mapSkus.busy ? 'Mapping…' : mode === 'single' ? 'Generate & Map SKU' : `Generate & Map ${quantity} SKUs`}
+            </button>
+          )}
+        </div>
+      </form>
+
+      <ErrorNotice error={generateSkus.error || mapSkus.error || (generationFailure ? { message: generationFailure } : null)} />
+
+      {hasGenerated && (
+        <div className="success-summary">
+          <div>
+            <span>Generated SKUs</span>
+            <strong>{generatedList.length}</strong>
+          </div>
+          <div>
+            <span>Generation status</span>
+            <StatusBadge tone={isFailureStatus(generationStatus) ? 'warning' : 'success'}>
+              {displayValue(generationStatus?.status_code) || 'OK'}
+            </StatusBadge>
+          </div>
+          <div>
+            <span>Mapped status</span>
+            <strong>{allMappedSuccessfully ? 'All successfully mapped' : `${generatedList.filter((r) => r.status && !isFailureStatus(r.status)).length} of ${generatedList.length} mapped`}</strong>
+          </div>
+        </div>
+      )}
+
+      {hasGenerated ? (
+        <DataTable
+          columns={resultColumns}
+          rows={generatedList}
+          rowKey={(row, index) => `${row.partner_sku}-${index}`}
+          emptyTitle="No generated SKUs to display"
+        />
+      ) : null}
+    </Panel>
+  )
 }
 
 function ProductTools({ notify }) {

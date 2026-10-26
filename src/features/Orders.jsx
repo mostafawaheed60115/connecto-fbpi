@@ -64,6 +64,9 @@ export function Orders({ notify }) {
   const markRead = useAsyncAction(noonApi.markFbpiOrdersRead)
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('all')
+  const [dateRange, setDateRange] = useState('7d')
+  const [customStart, setCustomStart] = useState('')
+  const [customEnd, setCustomEnd] = useState('')
   const [selected, setSelected] = useState(() => new Set())
   const [awbs, setAwbs] = useState({})
   const [shipmentIds, setShipmentIds] = useState({})
@@ -74,8 +77,27 @@ export function Orders({ notify }) {
   const [createdShipments, setCreatedShipments] = useState({})
   const [shipmentResults, setShipmentResults] = useState(null)
 
-  useEffect(() => { inbox.run() }, [inbox.run])
-  useAutoRefresh(() => inbox.run())
+  const getFilterParams = useCallback(() => {
+    if (dateRange === 'all') return { created_after: 'all' }
+    if (dateRange === 'custom') {
+      const filters = {}
+      if (customStart) filters.created_after = new Date(customStart).toISOString()
+      if (customEnd) filters.created_before = new Date(`${customEnd}T23:59:59Z`).toISOString()
+      return filters
+    }
+    const days = dateRange === '24h' ? 1 : dateRange === '14d' ? 14 : dateRange === '30d' ? 30 : 7
+    return {
+      created_after: new Date(Date.now() - days * 86400000).toISOString(),
+    }
+  }, [dateRange, customStart, customEnd])
+
+  const loadOrders = useCallback(() => {
+    const filters = getFilterParams()
+    return inbox.run(null, false, filters)
+  }, [inbox.run, getFilterParams])
+
+  useEffect(() => { loadOrders() }, [loadOrders])
+  useAutoRefresh(() => loadOrders())
 
   const usingFallback = inbox.result?.degraded || inbox.result?.source === 'DATABASE_FALLBACK'
   const userScopedStorage = isUserScopedOrdersResponse(inbox.result)
@@ -83,7 +105,7 @@ export function Orders({ notify }) {
     if (usingFallback && !userScopedStorage) return []
     return (inbox.result?.orders || [])
       .filter((entry) => entry.order)
-      .map((entry) => ({ ...entry.order, notification: entry }))
+      .map((entry) => ({ ...entry.order, notification: entry, is_read: entry.is_read }))
   }, [inbox.result, usingFallback, userScopedStorage])
   const scopeError = usingFallback && !userScopedStorage
     ? new Error('Stored orders were not returned with verified user ownership. Refresh after the backend update completes.')
@@ -114,16 +136,23 @@ export function Orders({ notify }) {
 
   const filtered = useMemo(() => rows.filter((order) => {
     const state = orderState(order)
-    const matchesStatus = status === 'all' || state.key === status
+    const isUnread = order.notification?.is_read === false || order.notification?.is_read === 0 || order.is_read === false
+    const matchesStatus = status === 'all'
+      ? true
+      : status === 'unread'
+      ? isUnread
+      : state.key === status
     const haystack = `${order.fbpi_order_nr} ${order.merchant_code} ${order.warehouse_code} ${getProductSkus(order).join(' ')}`.toLowerCase()
     return matchesStatus && haystack.includes(search.trim().toLowerCase())
   }), [rows, search, status])
 
   const counts = useMemo(() => rows.reduce((result, order) => {
     result.total += 1
+    const isUnread = order.notification?.is_read === false || order.notification?.is_read === 0 || order.is_read === false
+    if (isUnread) result.unread += 1
     result[orderState(order).key] = (result[orderState(order).key] || 0) + 1
     return result
-  }, { total: 0, pending: 0, ready: 0, out_of_stock: 0, processing: 0, attention: 0, shipped: 0, cancelled: 0 }), [rows])
+  }, { total: 0, unread: 0, pending: 0, ready: 0, out_of_stock: 0, processing: 0, attention: 0, shipped: 0, cancelled: 0 }), [rows])
 
   function toggle(orderNr) {
     setSelected((current) => {
@@ -135,9 +164,10 @@ export function Orders({ notify }) {
 
   async function openOrder(order) {
     setDetail(order)
-    if (order.notification?.is_read === false) {
+    const isUnread = order.notification?.is_read === false || order.notification?.is_read === 0 || order.is_read === false
+    if (isUnread) {
       const response = await markRead.run([order.fbpi_order_nr])
-      if (response) await inbox.run()
+      if (response) await loadOrders()
     }
   }
 
@@ -241,13 +271,25 @@ export function Orders({ notify }) {
         trackingFailures ? `${results.filter((item) => item.success).length} shipments created; ${trackingFailures} ID(s) were not saved.` : `${results.filter((item) => item.success).length} shipments created.`,
         trackingFailures ? 'warning' : 'success',
       )
-      inbox.run()
+      loadOrders()
     }
   }
 
   const columns = [
     { key: 'select', label: '', render: (order) => { const selectable = orderState(order).key === 'ready' && !hasShipmentId(order, createdShipments); return <input type="checkbox" aria-label={`Select ${order.fbpi_order_nr}`} checked={selected.has(order.fbpi_order_nr)} disabled={!selectable} onChange={() => toggle(order.fbpi_order_nr)} onClick={(event) => event.stopPropagation()} /> } },
-    { key: 'order', label: 'Order', render: (order) => <button className="table-link" onClick={() => openOrder(order)}>{order.fbpi_order_nr}</button> },
+    {
+      key: 'order',
+      label: 'Order',
+      render: (order) => {
+        const isUnread = order.notification?.is_read === false || order.notification?.is_read === 0 || order.is_read === false
+        return (
+          <div className="order-cell">
+            {isUnread ? <span className="notification-dot" title="Unread notification" /> : null}
+            <button className="table-link" onClick={() => openOrder(order)}>{order.fbpi_order_nr}</button>
+          </div>
+        )
+      },
+    },
     { key: 'awb', label: 'AWB', render: (order) => <input className="table-input awb-input" aria-label={`AWB for ${order.fbpi_order_nr}`} value={awbs[order.fbpi_order_nr] ?? getShipmentAwb(order, createdShipments)} onChange={(event) => setAwbs((current) => ({ ...current, [order.fbpi_order_nr]: event.target.value }))} placeholder="Enter AWB" disabled={orderState(order).key !== 'ready' || hasShipmentId(order, createdShipments)} /> },
     { key: 'shipment_id', label: 'Integration Shipment ID', render: (order) => { const existing = getShipmentId(order, createdShipments); return existing || <input className="table-input shipment-id-input" aria-label={`Integration Shipment ID for ${order.fbpi_order_nr}`} value={shipmentIds[order.fbpi_order_nr] || ''} onChange={(event) => setShipmentIds((current) => ({ ...current, [order.fbpi_order_nr]: event.target.value }))} placeholder="Enter shipment ID" disabled={orderState(order).key !== 'ready'} /> } },
     { key: 'created', label: 'Created', render: (order) => formatDate(order.order_created_at) },
@@ -269,18 +311,44 @@ export function Orders({ notify }) {
   return <>
     <div className="order-summary-strip">
       <button className={status === 'all' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('all')}><span>Overall orders</span><strong>{counts.total}</strong></button>
+      <button className={status === 'unread' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('unread')}><span>Unread notifications</span><strong>{counts.unread || inbox.result?.unread_count || 0}</strong></button>
       <button className={status === 'pending' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('pending')}><span>Pending acknowledgment</span><strong>{counts.pending}</strong></button>
       <button className={status === 'ready' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('ready')}><span>Ready to ship</span><strong>{counts.ready}</strong></button>
       <button className={status === 'shipped' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('shipped')}><span>Shipped</span><strong>{counts.shipped}</strong></button>
       <button className={status === 'cancelled' ? 'summary-stat active' : 'summary-stat'} onClick={() => setStatus('cancelled')}><span>Cancelled</span><strong>{counts.cancelled}</strong></button>
     </div>
-    <Panel title="Orders" description={usingFallback ? 'Showing the latest stored order snapshot while Noon is unavailable.' : "Loaded and paginated directly from Noon's FBPI warehouse order list."} actions={<button className="secondary-button" onClick={() => inbox.run()} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh orders'}</button>}>
+    <Panel title="Orders" description={usingFallback ? 'Showing the latest stored order snapshot while Noon is unavailable.' : "Loaded and paginated directly from Noon's FBPI warehouse order list."} actions={<button className="secondary-button" onClick={() => loadOrders()} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh orders'}</button>}>
       {usingFallback && userScopedStorage ? <div className="fallback-notice" role="status"><Icon name="alert" size={18} /><div><strong>Noon orders are temporarily unavailable</strong><span>Showing only this signed-in user's database records from {inbox.result?.snapshot_updated_at ? formatDate(inbox.result.snapshot_updated_at) : 'the latest successful sync'}. Shipment IDs, AWBs, and product SKUs remain user-scoped.</span></div></div> : null}
       <div className="orders-toolbar">
         <div className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search order, SKU, merchant, or warehouse" /></div>
-        <select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">All statuses</option><option value="pending">Pending acknowledgment</option><option value="ready">Ready to ship</option><option value="out_of_stock">Out of stock</option><option value="attention">Partially unavailable</option><option value="processing">Processing</option><option value="shipped">Shipped</option><option value="cancelled">Cancelled</option></select>
+        <select value={status} onChange={(event) => setStatus(event.target.value)}>
+          <option value="all">All statuses</option>
+          <option value="unread">Unread notifications only</option>
+          <option value="pending">Pending acknowledgment</option>
+          <option value="ready">Ready to ship</option>
+          <option value="out_of_stock">Out of stock</option>
+          <option value="attention">Partially unavailable</option>
+          <option value="processing">Processing</option>
+          <option value="shipped">Shipped</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <select value={dateRange} onChange={(event) => setDateRange(event.target.value)} aria-label="Date range filter">
+          <option value="7d">Past 7 days (default)</option>
+          <option value="24h">Past 24 hours</option>
+          <option value="14d">Past 14 days</option>
+          <option value="30d">Past 30 days</option>
+          <option value="all">All time</option>
+          <option value="custom">Custom date range</option>
+        </select>
         <form className="manual-order-form" onSubmit={addOrder}><input value={manualOrder} onChange={(event) => setManualOrder(event.target.value)} placeholder="Open an order number" /><button className="secondary-button" disabled={!manualOrder.trim() || fetchOrder.busy}>{fetchOrder.busy ? 'Opening…' : 'Open order'}</button></form>
       </div>
+      {dateRange === 'custom' ? (
+        <div className="custom-date-bar">
+          <label><span>Start date:</span><input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} /></label>
+          <label><span>End date:</span><input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} /></label>
+          <button type="button" className="secondary-button compact-button" onClick={() => loadOrders()} disabled={inbox.busy}>Apply range</button>
+        </div>
+      ) : null}
       <ErrorNotice error={scopeError || inbox.error || fetchOrder.error || updateOrder.error || markRead.error || allocate.error || bulkCreate.error} />
       {selected.size ? <div className="bulk-action-bar"><strong>{selected.size} selected</strong><button className="secondary-button" onClick={allocateForSelection} disabled={allocate.busy}>{allocate.busy ? 'Allocating…' : 'Allocate AWBs'}</button><button className="primary-button" onClick={createSelected} disabled={bulkCreate.busy}>{bulkCreate.busy ? 'Creating…' : `Create shipments (${selected.size})`}</button><button className="icon-button" onClick={() => setSelected(new Set())} aria-label="Clear selection"><Icon name="close" /></button></div> : null}
       {inbox.busy && !inbox.result ? <div className="loading-state">Fetching all order data from Noon…</div> : <DataTable columns={columns} rows={filtered} rowKey={(order) => order.fbpi_order_nr} emptyTitle="No matching orders" />}

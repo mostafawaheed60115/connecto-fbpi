@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import { noonApi, TARGET_WAREHOUSE } from '../api'
 import { useAsyncAction } from '../hooks/useAsyncAction'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
@@ -8,21 +8,40 @@ import { DataTable, ErrorNotice, Icon, Panel, StatusBadge } from '../components/
 export function Overview({ onNavigate }) {
   const inbox = useAsyncAction(noonApi.fbpiOrders)
   const markNotificationsRead = useAsyncAction(noonApi.markFbpiOrdersRead)
-  useEffect(() => { inbox.run() }, [inbox.run])
-  useAutoRefresh(() => inbox.run())
+
+  const loadOverview = useCallback(() => {
+    // Default 1 week, limit 10 for lightweight overview
+    const oneWeekAgo = new Date(Date.now() - 7 * 86400000).toISOString()
+    return inbox.run(10, false, { created_after: oneWeekAgo })
+  }, [inbox.run])
+
+  useEffect(() => { loadOverview() }, [loadOverview])
+  useAutoRefresh(() => loadOverview())
 
   async function openNotifications() {
     const response = await markNotificationsRead.run()
     if (!response) return
-    await inbox.run()
+    await loadOverview()
     onNavigate('orders')
   }
 
   const orders = (inbox.result?.orders || []).filter((entry) => entry.order).slice(0, 8)
   const recentRows = orders.map((entry) => ({ ...entry.order, received_at: entry.received_at, is_read: entry.is_read }))
   const columns = [
-    { key: 'order', label: 'Order', render: (row) => <button className="table-link" onClick={() => onNavigate('orders')}>{row.fbpi_order_nr || 'Unavailable'}</button> },
-    { key: 'received', label: 'Received', render: (row) => formatDate(row.received_at || row.order_created_at) },
+    {
+      key: 'order',
+      label: 'Order',
+      render: (row) => {
+        const isUnread = row.is_read === false || row.is_read === 0
+        return (
+          <div className="order-cell">
+            {isUnread ? <span className="notification-dot" title="Unread notification" /> : null}
+            <button className="table-link" onClick={() => onNavigate('orders')}>{row.fbpi_order_nr || 'Unavailable'}</button>
+          </div>
+        )
+      },
+    },
+    { key: 'created', label: 'Created', render: (row) => formatDate(row.order_created_at || row.received_at) },
     { key: 'warehouse', label: 'Warehouse', render: (row) => row.warehouse_code || '—' },
     { key: 'items', label: 'Items', render: (row) => row.items?.length || 0 },
     { key: 'status', label: 'Status', render: (row) => { const state = orderState(row); return <StatusBadge tone={state.tone}>{state.label}</StatusBadge> } },
@@ -40,7 +59,7 @@ export function Overview({ onNavigate }) {
       <button className="metric-card metric-button" onClick={() => onNavigate('inventory')}><div className="metric-icon metric-green"><Icon name="trend" /></div><div className="metric-copy"><span>Inventory</span><strong>Stock + price</strong><small>manage one place</small></div></button>
       <button className="metric-card metric-button" onClick={() => onNavigate('returns')}><div className="metric-icon metric-amber"><Icon name="return" /></div><div className="metric-copy"><span>Returns</span><strong>Lookup</strong><small>scan a barcode</small></div></button>
     </div>
-    <Panel title="Recent orders" description="Loaded directly from Noon's authoritative FBPI warehouse order list." actions={<button className="text-button" onClick={() => inbox.run()} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh'}</button>}>
+    <Panel title="Recent orders" description="Loaded directly from Noon's authoritative FBPI warehouse order list." actions={<button className="text-button" onClick={() => loadOverview()} disabled={inbox.busy}><Icon name="refresh" size={15} /> {inbox.busy ? 'Refreshing…' : 'Refresh'}</button>}>
       <ErrorNotice error={inbox.error || markNotificationsRead.error} />
       {inbox.busy && !inbox.result ? <div className="loading-state">Loading orders from Noon…</div> : <DataTable columns={columns} rows={recentRows} rowKey={(row) => row.fbpi_order_nr} emptyTitle="No orders found for this warehouse" />}
     </Panel>

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 
 import {
   firstGeneratedSku,
+  extractGeneratedSkus,
+  parseNskuList,
+  buildBatchMappingItems,
   generatedSkuFailureMessage,
   skuMappingFailureMessage,
   skuMappingItem,
@@ -13,6 +16,37 @@ test('extracts the first generated SKU from the documented response', () => {
   assert.equal(firstGeneratedSku({ skus: [{ value: 'SKU-001' }] }), '')
   assert.equal(firstGeneratedSku({ skus: [] }), '')
   assert.equal(firstGeneratedSku(null), '')
+})
+
+test('extracts all generated SKUs for single or bulk responses', () => {
+  assert.deepEqual(extractGeneratedSkus({ skus: [' SKU-001 ', 'SKU-002', ' SKU-003 '] }), ['SKU-001', 'SKU-002', 'SKU-003'])
+  assert.deepEqual(extractGeneratedSkus({ skus: [{ value: 'SKU-001' }, 'SKU-002'] }), ['SKU-001', 'SKU-002'])
+  assert.deepEqual(extractGeneratedSkus({ skus: [] }), [])
+  assert.deepEqual(extractGeneratedSkus(null), [])
+})
+
+test('parses comma-separated and newline-separated NSKU lists', () => {
+  assert.deepEqual(parseNskuList('NSKU-1\nNSKU-2\r\nNSKU-3'), ['NSKU-1', 'NSKU-2', 'NSKU-3'])
+  assert.deepEqual(parseNskuList('NSKU-1, NSKU-2,  NSKU-3 '), ['NSKU-1', 'NSKU-2', 'NSKU-3'])
+  assert.deepEqual(parseNskuList([' NSKU-1 ', 'NSKU-2']), ['NSKU-1', 'NSKU-2'])
+  assert.deepEqual(parseNskuList(''), [])
+})
+
+test('builds batch mapping items matching 1-to-1 or 1-to-many', () => {
+  const skus = ['SKU-1', 'SKU-2', 'SKU-3']
+  const nskus = ['NSKU-1', 'NSKU-2', 'NSKU-3']
+  assert.deepEqual(buildBatchMappingItems(skus, nskus), [
+    { partner_sku: 'SKU-1', nsku_child: 'NSKU-1' },
+    { partner_sku: 'SKU-2', nsku_child: 'NSKU-2' },
+    { partner_sku: 'SKU-3', nsku_child: 'NSKU-3' },
+  ])
+
+  // Single NSKU mapped to multiple SKUs
+  assert.deepEqual(buildBatchMappingItems(skus, ['NSKU-SINGLE'], true), [
+    { partner_sku: 'SKU-1', nsku_child: 'NSKU-SINGLE', force_map: true },
+    { partner_sku: 'SKU-2', nsku_child: 'NSKU-SINGLE', force_map: true },
+    { partner_sku: 'SKU-3', nsku_child: 'NSKU-SINGLE', force_map: true },
+  ])
 })
 
 test('returns the exact generation failure reason', () => {

@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { clearSession, createDashboardSession, hasSession, SESSION_EXPIRED_EVENT } from './api'
-import { Icon } from './components/ui'
+import { ErrorBoundary, Icon } from './components/ui'
 
 const Catalog = lazy(() => import('./features/Catalog').then((module) => ({ default: module.Catalog })))
 const Inventory = lazy(() => import('./features/Inventory').then((module) => ({ default: module.Inventory })))
@@ -56,7 +56,86 @@ function Dashboard({ onLogout }) {
   }, [])
   const [title, description] = PAGE_COPY[page]
 
-  return <div className="app-shell"><aside className="sidebar"><div className="brand-lockup"><img src="/assets/Connecto Logo - 2026 (2) (2).png" alt="Connecto" /><span>FBPI CONTROL</span></div><div className="workspace-switch"><span className="workspace-dot" /><div><strong>Noon operations</strong><small>Test environment</small></div></div><nav className="side-nav"><div className="nav-label">Workspace</div>{NAV_ITEMS.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? 'nav-active' : ''}`} onClick={() => setPage(item.id)}><Icon name={item.icon} /><span>{item.label}</span></button>)}</nav><div className="sidebar-bottom"><div className="connection-card"><span className="connection-icon is-live"><Icon name="trend" size={16} /></span><div><strong>Secure session</strong><small>Noon API connected</small></div></div><button className="logout-button" onClick={onLogout}>Sign out</button></div></aside><main className="main-area"><header className="topbar"><div className="breadcrumb"><span>Workspace</span><i>/</i><strong>{title}</strong></div><div className="top-actions"><div className="api-indicator"><span className="status-light live" />Authenticated</div><div className="avatar">CO</div></div></header><section className="content dashboard-content"><div className="page-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="service-pill">Test workspace</span></div><Suspense fallback={<div className="loading-state">Loading workspace…</div>}>{page === 'overview' ? <Overview onNavigate={setPage} /> : null}{page === 'orders' ? <Orders notify={notify} /> : null}{page === 'inventory' ? <Inventory notify={notify} /> : null}{page === 'catalog' ? <Catalog notify={notify} /> : null}{page === 'returns' ? <Returns notify={notify} /> : null}{page === 'reports' ? <Reports notify={notify} /> : null}</Suspense></section></main>{notice ? <div className={`toast toast-${notice.tone}`}><span className="toast-mark"><Icon name={notice.tone === 'success' ? 'check' : 'close'} size={14} /></span>{notice.message}</div> : null}</div>
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand-lockup">
+          <img src="/assets/Connecto Logo - 2026 (2) (2).png" alt="Connecto" />
+          <span>FBPI CONTROL</span>
+        </div>
+        <div className="workspace-switch">
+          <span className="workspace-dot" />
+          <div>
+            <strong>Noon operations</strong>
+            <small>Test environment</small>
+          </div>
+        </div>
+        <nav className="side-nav">
+          <div className="nav-label">Workspace</div>
+          {NAV_ITEMS.map((item) => (
+            <button
+              key={item.id}
+              className={`nav-item ${page === item.id ? 'nav-active' : ''}`}
+              onClick={() => setPage(item.id)}
+            >
+              <Icon name={item.icon} />
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="connection-card">
+            <span className="connection-icon is-live"><Icon name="trend" size={16} /></span>
+            <div>
+              <strong>Secure session</strong>
+              <small>Noon API connected</small>
+            </div>
+          </div>
+          <button className="logout-button" onClick={onLogout}>Sign out</button>
+        </div>
+      </aside>
+
+      <main className="main-area">
+        <header className="topbar">
+          <div className="breadcrumb">
+            <span>Workspace</span><i>/</i><strong>{title}</strong>
+          </div>
+          <div className="top-actions">
+            <div className="api-indicator"><span className="status-light live" />Authenticated</div>
+            <div className="avatar">CO</div>
+          </div>
+        </header>
+
+        <section className="content dashboard-content">
+          <div className="page-heading">
+            <div>
+              <h2>{title}</h2>
+              <p>{description}</p>
+            </div>
+            <span className="service-pill">Test workspace</span>
+          </div>
+
+          <ErrorBoundary key={page}>
+            <Suspense fallback={<div className="loading-state">Loading workspace…</div>}>
+              {page === 'overview' ? <Overview onNavigate={setPage} /> : null}
+              {page === 'orders' ? <Orders notify={notify} /> : null}
+              {page === 'inventory' ? <Inventory notify={notify} /> : null}
+              {page === 'catalog' ? <Catalog notify={notify} /> : null}
+              {page === 'returns' ? <Returns notify={notify} /> : null}
+              {page === 'reports' ? <Reports notify={notify} /> : null}
+            </Suspense>
+          </ErrorBoundary>
+        </section>
+      </main>
+
+      {notice ? (
+        <div className={`toast toast-${notice.tone}`}>
+          <span className="toast-mark"><Icon name={notice.tone === 'success' ? 'check' : 'close'} size={14} /></span>
+          {notice.message}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 export default function App() {

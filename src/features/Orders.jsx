@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { noonApi, TARGET_WAREHOUSE } from '../api'
 import { useAsyncAction } from '../hooks/useAsyncAction'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
@@ -185,7 +185,7 @@ export function Orders({ notify }) {
         items: current.items.map((currentItem) => currentItem.mp_item_nr === item.mp_item_nr ? { ...currentItem, integration_status: 'INTEGRATION_ITEM_STATUS_OUT_OF_STOCK' } : currentItem),
       } : current)
       notify(`${item.partner_sku || item.mp_item_nr} marked out of stock in Noon.`)
-      await inbox.run()
+      await loadOrders()
     } finally {
       setBusyItemNr(null)
     }
@@ -237,7 +237,7 @@ export function Orders({ notify }) {
         trackingSaved ? `Shipment created for ${order.fbpi_order_nr}.` : `Shipment created, but its ID could not be saved.`,
         trackingSaved ? 'success' : 'warning',
       )
-      inbox.run()
+      loadOrders()
     } catch (error) {
       setShipmentResults([{ fbpi_order_nr: order.fbpi_order_nr, success: false, message: error.message }])
     } finally {

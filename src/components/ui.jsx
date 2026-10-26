@@ -1,3 +1,4 @@
+import { Component } from 'react'
 import { displayValue } from '../utils/format'
 
 export function Icon({ name, size = 18 }) {
@@ -54,4 +55,45 @@ export function DataTable({ columns, rows, rowKey, emptyTitle = 'No records foun
 
 export function Tabs({ items, value, onChange }) {
   return <div className="tabs" role="tablist">{items.map((item) => <button type="button" key={item.value} className={value === item.value ? 'tab active' : 'tab'} onClick={() => onChange(item.value)} role="tab" aria-selected={value === item.value}>{item.label}</button>)}</div>
+}
+
+export class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('ErrorBoundary caught error:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="empty-state" style={{ padding: '3rem 1.5rem', border: '1px solid #fecaca', background: '#fff5f5', borderRadius: '12px', margin: '1rem 0' }}>
+          <span className="empty-state-icon" style={{ background: '#fee2e2', color: '#dc2626' }}>
+            <Icon name="alert" size={24} />
+          </span>
+          <strong style={{ fontSize: '1.1rem', color: '#991b1b', marginTop: '0.75rem' }}>View failed to load</strong>
+          <p style={{ color: '#b91c1c', maxWidth: '480px', margin: '0.5rem auto' }}>
+            {this.state.error?.message || 'An unexpected error occurred while rendering this section.'}
+          </p>
+          <div style={{ marginTop: '1rem', display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+            <button
+              type="button"
+              className="primary-button compact-button"
+              onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload() }}
+            >
+              <Icon name="refresh" size={14} /> Reload workspace
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }

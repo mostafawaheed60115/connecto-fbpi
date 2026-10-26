@@ -230,12 +230,11 @@ function GenerateSkuMapping({ notify }) {
     setGeneratedSku(sku.trim())
     const upsert = await upsertProduct.run({
       skus: [{ partner_sku: sku.trim() }],
-      brand: 'Acme',
-      category: 'apparel-shoes-sneakers',
-      images: [{ url: 'https://cdn.example.com/acme-runner-main.jpg', sort: 1 }],
+      brand: 'Generic',
+      category: 'kitchen-dining-coffee-tea-mug',
+      images: [{ url: 'https://pub-2828d39640284bd1b08194cd95d1cb43.r2.dev/Bubble_wrap_roll_for_packing_20260922141659.jpeg', sort: 1 }],
       attributes: {
-        product_title: { values: [{ value: title, language: 'LANGUAGE_EN' }, { value: title, language: 'LANGUAGE_AR' }] },
-        shoe_size: { values: [{ value: '42' }] },
+        product_title: { values: [{ value: 'test', language: 'LANGUAGE_EN' }, { value: 'تيست', language: 'LANGUAGE_AR' }] },
       },
     })
     if (!upsert) return notify(`Generated ${sku.trim()}, but upsert failed.`, 'warning')

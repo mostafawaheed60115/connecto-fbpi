@@ -61,6 +61,7 @@ export const noonApi = {
   productUpsert: (body) => json('/new_noon/products/upsert', body),
   productContent: (sku_parent) => json('/new_noon/products/content', { sku_parent }),
   mapBarcodes: (items) => json('/new_noon/catalog/barcodes/map', { items }),
+  generateSkus: (quantity = 1) => json('/new_noon/catalog/skus/generate', { quantity }),
   mapSkus: (items) => json('/new_noon/catalog/skus/batch-map', { items }),
   deleteParentSkus: (items) => json('/new_noon/catalog/parent-skus/delete', { items }),
   deleteChildSkus: (items) => json('/new_noon/catalog/child-skus/delete', { items }),

@@ -626,6 +626,7 @@ These authenticated endpoints proxy the connected user's Noon account. Unless no
 | `POST` | `/new_noon/cross-border/transfer-prices/get` | `{ items: [{ partner_sku }] }` |
 | `POST` | `/new_noon/cross-border/transfer-prices/upsert` | `{ items: [{ partner_sku, transfer_price_usd?, msrp_usd?, is_active? }] }` |
 | `POST` | `/new_noon/catalog/barcodes/map` | `{ items: [{ barcode, partner_sku, force_map? }] }` |
+| `POST` | `/new_noon/catalog/skus/batch-map` | `{ items: [{ partner_sku, nsku_child, force_map? }] }` |
 | `POST` | `/new_noon/catalog/parent-skus/delete` | `{ items: [{ parent_partner_sku, zsku_parent }] }` |
 | `POST` | `/new_noon/catalog/child-skus/delete` | `{ items: [{ partner_sku, zsku_child }] }` |
 | `POST` | `/new_noon/catalog/imports/signed-url` | `{ file_type }` |

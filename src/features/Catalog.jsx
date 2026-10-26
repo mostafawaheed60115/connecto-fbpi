@@ -144,6 +144,53 @@ function CreateProduct({ notify }) {
   </>
 }
 
+function SkuMapping({ notify }) {
+  const mapSkus = useAsyncAction(noonApi.mapSkus)
+  const [rows, setRows] = useState([{ partner_sku: DEFAULT_SKU, nsku_child: '' }])
+  const [forceMap, setForceMap] = useState(false)
+  const items = rows
+    .map((row) => ({ partner_sku: row.partner_sku.trim(), nsku_child: row.nsku_child.trim(), ...(forceMap ? { force_map: true } : {}) }))
+    .filter((row) => row.partner_sku && row.nsku_child)
+  const incomplete = rows.some((row) => Boolean(row.partner_sku.trim()) !== Boolean(row.nsku_child.trim()))
+  const resultRows = mapSkus.result?.items || []
+  const resultColumns = [
+    { key: 'partner_sku', label: 'Seller SKU' },
+    { key: 'nsku_child', label: 'Noon NSKU child' },
+    { key: 'status', label: 'API status', render: (row) => <StatusBadge tone={(row.status?.status_code || 'OK') === 'OK' ? 'success' : 'warning'}>{row.status?.status_code || 'OK'}</StatusBadge> },
+    { key: 'message', label: 'Message', render: (row) => row.status?.message || '—' },
+  ]
+
+  function updateRow(index, key, value) {
+    setRows((current) => current.map((row, position) => position === index ? { ...row, [key]: value } : row))
+  }
+
+  function addRow() {
+    setRows((current) => [...current, { partner_sku: '', nsku_child: '' }])
+  }
+
+  function removeRow(index) {
+    setRows((current) => current.filter((_, position) => position !== index))
+  }
+
+  async function submit(event) {
+    event.preventDefault()
+    if (incomplete) return notify('Complete both fields in every SKU mapping row.', 'warning')
+    if (!items.length) return notify('Add at least one seller SKU and Noon NSKU child.', 'warning')
+    const response = await mapSkus.run(items)
+    if (response) notify(`${items.length} SKU mapping${items.length === 1 ? '' : 's'} submitted to Noon.`)
+  }
+
+  return <Panel title="Batch SKU mapping" description="Map seller SKUs to Noon child NSKUs. Use #del# as the NSKU child to remove an existing mapping.">
+    <form onSubmit={submit}>
+      <div className="repeat-list">{rows.map((row, index) => <div className="repeat-row" key={index}><Field label="Seller SKU"><input value={row.partner_sku} onChange={(event) => updateRow(index, 'partner_sku', event.target.value)} /></Field><Field label="Noon NSKU child" hint="Enter #del# to delete the mapping."><input value={row.nsku_child} onChange={(event) => updateRow(index, 'nsku_child', event.target.value)} /></Field><button type="button" className="icon-button danger-icon" disabled={rows.length === 1} onClick={() => removeRow(index)} aria-label="Remove SKU mapping"><Icon name="trash" /></button></div>)}</div>
+      <button type="button" className="text-button" onClick={addRow}><Icon name="plus" size={15} /> Add another SKU</button>
+      <div className="button-row sku-map-actions"><label className="toggle-field"><input type="checkbox" checked={forceMap} onChange={(event) => setForceMap(event.target.checked)} /><span><strong>Force map</strong><small>Override existing mappings</small></span></label><button className="primary-button" disabled={!items.length || incomplete || mapSkus.busy}>{mapSkus.busy ? 'Submitting…' : items.length ? `Map ${items.length} SKU${items.length === 1 ? '' : 's'}` : 'Map SKUs'}</button></div>
+    </form>
+    <ErrorNotice error={mapSkus.error} />
+    <DataTable columns={resultColumns} rows={resultRows} rowKey={(row, index) => `${row.partner_sku}-${index}`} emptyTitle="No SKU mapping operation yet" />
+  </Panel>
+}
+
 function ProductTools({ notify }) {
   const [tab, setTab] = useState('content')
   const content = useAsyncAction(noonApi.productContent)
@@ -156,7 +203,7 @@ function ProductTools({ notify }) {
   const mappingRows = barcodeMap.result?.items || (barcodeMap.result ? [{ partner_sku: partnerSku, barcode, status: barcodeMap.result.status }] : [])
   const mappingColumns = [{ key: 'partner_sku', label: 'Seller SKU' }, { key: 'barcode', label: 'Barcode' }, { key: 'status', label: 'API status', render: (row) => <StatusBadge tone={(row.status?.status_code || 'OK') === 'OK' ? 'success' : 'warning'}>{row.status?.status_code || 'OK'}</StatusBadge> }]
   async function map(event) { event.preventDefault(); const response = await barcodeMap.run([{ partner_sku: partnerSku.trim(), barcode: barcode.trim(), force_map: true }]); if (response) notify('Barcode mapping submitted.') }
-  return <><Tabs items={[{ value: 'content', label: 'Content and QC' }, { value: 'barcode', label: 'Barcode mapping' }]} value={tab} onChange={setTab} />{tab === 'content' ? <Panel title="Product content and quality" description="Use the parent SKU returned by product creation."><form className="inline-form" onSubmit={(event) => { event.preventDefault(); content.run(parentSku.trim()) }}><Field label="Noon parent SKU"><input value={parentSku} onChange={(event) => setParentSku(event.target.value)} /></Field><button className="primary-button" disabled={!parentSku.trim() || content.busy}>Check content</button></form><ErrorNotice error={content.error} />{content.result ? <><div className="success-summary"><div><span>Parent SKU</span><strong>{content.result.sku_parent}</strong></div><div><span>Images</span><strong>{content.result.images?.length || 0}</strong></div></div><DataTable columns={statusColumns} rows={statuses} rowKey={(row, index) => row.language || index} emptyTitle="No content statuses returned" /></> : null}</Panel> : <Panel title="Map a barcode" description="Associate one barcode with a seller SKU."><form className="form-grid" onSubmit={map}><Field label="Seller SKU"><input value={partnerSku} onChange={(event) => setPartnerSku(event.target.value)} /></Field><Field label="Barcode"><input value={barcode} onChange={(event) => setBarcode(event.target.value)} /></Field><button className="primary-button" disabled={!partnerSku.trim() || !barcode.trim() || barcodeMap.busy}>Map barcode</button></form><ErrorNotice error={barcodeMap.error} /><DataTable columns={mappingColumns} rows={mappingRows} rowKey={(row) => `${row.partner_sku}-${row.barcode}`} emptyTitle="No barcode operation yet" /></Panel>}</>
+  return <><Tabs items={[{ value: 'content', label: 'Content and QC' }, { value: 'barcode', label: 'Barcode mapping' }, { value: 'skus', label: 'SKU mapping' }]} value={tab} onChange={setTab} />{tab === 'content' ? <Panel title="Product content and quality" description="Use the parent SKU returned by product creation."><form className="inline-form" onSubmit={(event) => { event.preventDefault(); content.run(parentSku.trim()) }}><Field label="Noon parent SKU"><input value={parentSku} onChange={(event) => setParentSku(event.target.value)} /></Field><button className="primary-button" disabled={!parentSku.trim() || content.busy}>Check content</button></form><ErrorNotice error={content.error} />{content.result ? <><div className="success-summary"><div><span>Parent SKU</span><strong>{content.result.sku_parent}</strong></div><div><span>Images</span><strong>{content.result.images?.length || 0}</strong></div></div><DataTable columns={statusColumns} rows={statuses} rowKey={(row, index) => row.language || index} emptyTitle="No content statuses returned" /></> : null}</Panel> : tab === 'barcode' ? <Panel title="Map a barcode" description="Associate one barcode with a seller SKU."><form className="form-grid" onSubmit={map}><Field label="Seller SKU"><input value={partnerSku} onChange={(event) => setPartnerSku(event.target.value)} /></Field><Field label="Barcode"><input value={barcode} onChange={(event) => setBarcode(event.target.value)} /></Field><button className="primary-button" disabled={!partnerSku.trim() || !barcode.trim() || barcodeMap.busy}>Map barcode</button></form><ErrorNotice error={barcodeMap.error} /><DataTable columns={mappingColumns} rows={mappingRows} rowKey={(row) => `${row.partner_sku}-${row.barcode}`} emptyTitle="No barcode operation yet" /></Panel> : <SkuMapping notify={notify} />}</>
 }
 
 export function Catalog({ notify }) {

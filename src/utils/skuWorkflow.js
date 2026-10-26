@@ -64,3 +64,27 @@ export function skuMappingFailureMessage(response) {
   if (!failed) return ''
   return displayValue(failed.status?.message) || displayValue(failed.status?.status_code) || 'Noon rejected the mapping.'
 }
+
+export function buildGenerateAndMapPayload({ mode = 'single', nsku = '', count = 1, rows = [], forceMap = true } = {}) {
+  if (mode === 'single') {
+    const cleanNsku = String(nsku || '').trim()
+    const cleanCount = Math.max(1, Math.min(200, parseInt(count, 10) || 1))
+    return {
+      nsku: cleanNsku,
+      count: cleanCount,
+      force_map: Boolean(forceMap),
+    }
+  }
+
+  const items = (Array.isArray(rows) ? rows : [])
+    .map((r) => ({
+      nsku: String(r.nsku || r.nsku_child || '').trim(),
+      count: Math.max(1, Math.min(200, parseInt(r.count || r.quantity, 10) || 1)),
+    }))
+    .filter((r) => Boolean(r.nsku))
+
+  return {
+    items,
+    force_map: Boolean(forceMap),
+  }
+}

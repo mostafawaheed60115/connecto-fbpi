@@ -9,6 +9,7 @@ import {
   generatedSkuFailureMessage,
   skuMappingFailureMessage,
   skuMappingItem,
+  buildGenerateAndMapPayload,
 } from '../src/utils/skuWorkflow.js'
 
 test('extracts the first generated SKU from the documented response', () => {
@@ -76,4 +77,29 @@ test('returns mapping failures without treating empty results as success', () =>
     'NSKU is invalid',
   )
   assert.equal(skuMappingFailureMessage({ items: [] }), 'Noon returned no mapping result.')
+})
+
+test('builds generate and map payload for single and bulk mode', () => {
+  assert.deepEqual(
+    buildGenerateAndMapPayload({ mode: 'single', nsku: ' N29896310A ', count: 2, forceMap: true }),
+    { nsku: 'N29896310A', count: 2, force_map: true }
+  )
+  assert.deepEqual(
+    buildGenerateAndMapPayload({
+      mode: 'bulk',
+      rows: [
+        { nsku: ' N29896310A ', count: 3 },
+        { nsku_child: 'N11111111A', quantity: 1 },
+        { nsku: '', count: 1 },
+      ],
+      forceMap: false,
+    }),
+    {
+      items: [
+        { nsku: 'N29896310A', count: 3 },
+        { nsku: 'N11111111A', count: 1 },
+      ],
+      force_map: false,
+    }
+  )
 })

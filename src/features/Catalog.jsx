@@ -4,6 +4,7 @@ import { useAsyncAction } from '../hooks/useAsyncAction'
 import { categoryLabel, displayValue, humanize, isFailureStatus } from '../utils/format'
 import {
   buildBatchMappingItems,
+  buildGenerateAndMapPayload,
   extractGeneratedSkus,
   firstGeneratedSku,
   generatedSkuFailureMessage,
@@ -209,65 +210,192 @@ function SkuMapping({ notify }) {
   </Panel>
 }
 
-function GenerateSkuMapping({ notify }) {
-  const generateSkus = useAsyncAction(noonApi.generateSkus)
-  const upsertProduct = useAsyncAction(noonApi.productUpsert)
-  const mapSkus = useAsyncAction(noonApi.mapSkus)
-  const [counter, setCounter] = useState(() => Number(localStorage.getItem('connecto-psku-counter') || '0') + 1)
-  const [generatedSku, setGeneratedSku] = useState('')
-  const [upserted, setUpserted] = useState(false)
-  const [mappingRows, setMappingRows] = useState([])
-  const busy = generateSkus.busy || upsertProduct.busy || mapSkus.busy
-  const title = `Connecto-PSKU-${counter}`
+function GenerateAndMapSkus({ notify }) {
+  const generateAndMap = useAsyncAction(noonApi.generateAndMapSkus)
+  const [mode, setMode] = useState('single')
+  const [singleNsku, setSingleNsku] = useState('N29896310A')
+  const [singleCount, setSingleCount] = useState(1)
+  const [rows, setRows] = useState([{ nsku: 'N29896310A', count: 1 }])
+  const [forceMap, setForceMap] = useState(true)
 
-  async function runWorkflow() {
-    setUpserted(false)
-    setMappingRows([])
-    const gen = await generateSkus.run(1)
-    if (!gen) return
-    const sku = (gen.skus || []).find((v) => typeof v === 'string' && v.trim())
-    if (!sku) return notify('Noon did not return a generated seller SKU.', 'warning')
-    setGeneratedSku(sku.trim())
-    const upsert = await upsertProduct.run({
-      skus: [{ partner_sku: sku.trim() }],
-      brand: 'Generic',
-      category: 'books-food_drink-drinks_beverages_coffee_tea',
-      images: [{ url: 'https://pub-2828d39640284bd1b08194cd95d1cb43.r2.dev/Bubble_wrap_roll_for_packing_20260922141659.jpeg', sort: 1 }],
-      attributes: {
-        product_title: { values: [{ value: 'test', language: 'LANGUAGE_EN' }, { value: 'تيست', language: 'LANGUAGE_AR' }] },
-      },
-    })
-    if (!upsert) return notify(`Generated ${sku.trim()}, but upsert failed.`, 'warning')
-    setUpserted(true)
-    const map = await mapSkus.run([{ partner_sku: sku.trim(), nsku_child: 'N29896310A', force_map: true }])
-    if (!map) return notify(`Generated and upserted ${sku.trim()}, but mapping failed.`, 'warning')
-    setMappingRows(Array.isArray(map.items) ? map.items : [])
-    const failed = (map.items || []).filter((item) => isFailureStatus(item.status))
-    if (failed.length) {
-      const msg = failed.find((item) => item.status?.message)?.status?.message
-      notify(`${failed.length} mapping rejected${msg ? `: ${msg}` : '.'}`, 'warning')
+  function updateRow(index, key, value) {
+    setRows((current) => current.map((row, pos) => pos === index ? { ...row, [key]: value } : row))
+  }
+
+  function addRow() {
+    setRows((current) => [...current, { nsku: '', count: 1 }])
+  }
+
+  function removeRow(index) {
+    setRows((current) => current.filter((_, pos) => pos !== index))
+  }
+
+  async function submit(event) {
+    event.preventDefault()
+    let payload
+    if (mode === 'single') {
+      if (!singleNsku.trim()) return notify('Enter a target NSKU.', 'warning')
+      const count = parseInt(singleCount, 10) || 1
+      if (count < 1) return notify('Number of needed PSKUs must be at least 1.', 'warning')
+      payload = buildGenerateAndMapPayload({ mode: 'single', nsku: singleNsku, count, forceMap })
     } else {
-      notify(`${sku.trim()} generated, upserted, and mapped to N29896310A.`)
-      localStorage.setItem('connecto-psku-counter', String(counter))
-      setCounter((c) => c + 1)
+      const validRows = rows.filter((r) => r.nsku.trim())
+      if (!validRows.length) return notify('Add at least one valid NSKU in the list.', 'warning')
+      payload = buildGenerateAndMapPayload({ mode: 'bulk', rows: validRows, forceMap })
+    }
+
+    const response = await generateAndMap.run(payload)
+    if (response) {
+      const totalGen = response.total_generated || response.generated_skus?.length || 0
+      const items = Array.isArray(response.items) ? response.items : []
+      const failed = items.filter((item) => isFailureStatus(item.status))
+      if (failed.length) {
+        const firstMessage = failed.find((item) => item.status?.message)?.status?.message
+        notify(`${failed.length} of ${items.length} mappings rejected by Noon${firstMessage ? `: ${firstMessage}` : '.'}`, 'warning')
+      } else {
+        notify(`${totalGen} PSKU${totalGen === 1 ? '' : 's'} generated, upserted, and mapped to Noon.`, 'success')
+      }
     }
   }
 
+  const resultRows = generateAndMap.result?.items || []
   const resultColumns = [
-    { key: 'partner_sku', label: 'Seller SKU', render: (row) => displayValue(row.partner_sku) },
+    { key: 'partner_sku', label: 'Seller SKU (PSKU)', render: (row) => displayValue(row.partner_sku) },
     { key: 'nsku_child', label: 'Noon NSKU child', render: (row) => displayValue(row.nsku_child) },
     { key: 'status', label: 'API status', render: (row) => <StatusBadge tone={isFailureStatus(row.status) ? 'warning' : 'success'}>{displayValue(row.status?.status_code) || 'OK'}</StatusBadge> },
     { key: 'message', label: 'Message', render: (row) => displayValue(row.status?.message) },
   ]
 
-  return <Panel title="Generate, upsert, and map a seller SKU" description="Proof of concept: generate a seller SKU, create a minimal fake product, then map it to NSKU N29896310A.">
-    <div className="button-row sku-map-actions">
-      <button className="primary-button" disabled={busy} onClick={runWorkflow}>{busy ? 'Working.' : 'Run proof of concept'}</button>
-    </div>
-    <ErrorNotice error={generateSkus.error || upsertProduct.error || mapSkus.error} />
-    {generatedSku ? <div className="success-summary"><div><span>Generated seller SKU</span><strong>{generatedSku}</strong></div><div><span>Product title</span><strong>{title}</strong></div><div><span>Upserted</span><strong>{upserted ? 'Yes' : 'No'}</strong></div><div><span>Target NSKU</span><strong>N29896310A</strong></div></div> : null}
-    <DataTable columns={resultColumns} rows={mappingRows} rowKey={(row, index) => `${row.partner_sku}-${index}`} emptyTitle="No mapping operation yet" />
-  </Panel>
+  return (
+    <Panel
+      title="Generate and map seller SKUs"
+      description="Automated workflow: generates seller SKUs (PSKUs), upserts template products, and maps the PSKUs to target child NSKUs."
+    >
+      <div style={{ marginBottom: '1.25rem' }}>
+        <Tabs
+          items={[
+            { value: 'single', label: 'Single target NSKU' },
+            { value: 'bulk', label: 'Bulk target NSKUs' },
+          ]}
+          value={mode}
+          onChange={setMode}
+        />
+      </div>
+
+      <form onSubmit={submit}>
+        {mode === 'single' ? (
+          <div className="form-grid">
+            <Field label="Target child NSKU *" hint="The Noon child NSKU to map to">
+              <input
+                value={singleNsku}
+                onChange={(event) => setSingleNsku(event.target.value)}
+                placeholder="e.g. N29896310A"
+              />
+            </Field>
+            <Field label="Number of needed PSKUs *" hint="Generates N PSKUs and maps each to this NSKU">
+              <input
+                type="number"
+                min="1"
+                max="200"
+                value={singleCount}
+                onChange={(event) => setSingleCount(event.target.value)}
+              />
+            </Field>
+          </div>
+        ) : (
+          <>
+            <div className="repeat-list">
+              {rows.map((row, index) => (
+                <div className="repeat-row" key={index}>
+                  <Field label="Target child NSKU">
+                    <input
+                      value={row.nsku}
+                      onChange={(event) => updateRow(index, 'nsku', event.target.value)}
+                      placeholder="e.g. N29896310A"
+                    />
+                  </Field>
+                  <Field label="PSKUs needed" hint="Count for this NSKU">
+                    <input
+                      type="number"
+                      min="1"
+                      max="200"
+                      value={row.count}
+                      onChange={(event) => updateRow(index, 'count', event.target.value)}
+                    />
+                  </Field>
+                  <button
+                    type="button"
+                    className="icon-button danger-icon"
+                    disabled={rows.length === 1}
+                    onClick={() => removeRow(index)}
+                    aria-label="Remove row"
+                  >
+                    <Icon name="trash" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button type="button" className="text-button" onClick={addRow}>
+              <Icon name="plus" size={15} /> Add another target NSKU
+            </button>
+          </>
+        )}
+
+        <div className="button-row sku-map-actions" style={{ marginTop: '1rem' }}>
+          <label className="toggle-field">
+            <input
+              type="checkbox"
+              checked={forceMap}
+              onChange={(event) => setForceMap(event.target.checked)}
+            />
+            <span>
+              <strong>Force map</strong>
+              <small>Override existing mappings in Noon</small>
+            </span>
+          </label>
+          <button className="primary-button" disabled={generateAndMap.busy}>
+            {generateAndMap.busy
+              ? 'Generating, upserting & mapping…'
+              : mode === 'single'
+                ? `Generate & map ${singleCount || 1} PSKU${Number(singleCount) === 1 ? '' : 's'}`
+                : `Generate & map ${rows.reduce((sum, r) => sum + (parseInt(r.count, 10) || 1), 0)} PSKUs`}
+          </button>
+        </div>
+      </form>
+
+      <ErrorNotice error={generateAndMap.error} />
+
+      {generateAndMap.result ? (
+        <div className="success-summary">
+          <div>
+            <span>Total requested</span>
+            <strong>{generateAndMap.result.total_requested || 0}</strong>
+          </div>
+          <div>
+            <span>Total generated</span>
+            <strong>{generateAndMap.result.total_generated || 0}</strong>
+          </div>
+          <div>
+            <span>Total mapped</span>
+            <strong>{resultRows.length}</strong>
+          </div>
+          <div>
+            <span>API status</span>
+            <StatusBadge tone="success">
+              {displayValue(generateAndMap.result.status?.status_code) || 'OK'}
+            </StatusBadge>
+          </div>
+        </div>
+      ) : null}
+
+      <DataTable
+        columns={resultColumns}
+        rows={resultRows}
+        rowKey={(row, index) => `${row.partner_sku}-${index}`}
+        emptyTitle="No mapping operation yet"
+      />
+    </Panel>
+  )
 }
 
 function ProductTools({ notify }) {
@@ -282,7 +410,7 @@ function ProductTools({ notify }) {
   const mappingRows = barcodeMap.result?.items || (barcodeMap.result ? [{ partner_sku: partnerSku, barcode, status: barcodeMap.result.status }] : [])
   const mappingColumns = [{ key: 'partner_sku', label: 'Seller SKU' }, { key: 'barcode', label: 'Barcode' }, { key: 'status', label: 'API status', render: (row) => <StatusBadge tone={(row.status?.status_code || 'OK') === 'OK' ? 'success' : 'warning'}>{row.status?.status_code || 'OK'}</StatusBadge> }]
   async function map(event) { event.preventDefault(); const response = await barcodeMap.run([{ partner_sku: partnerSku.trim(), barcode: barcode.trim(), force_map: true }]); if (response) notify('Barcode mapping submitted.') }
-  return <><Tabs items={[{ value: 'content', label: 'Content and QC' }, { value: 'barcode', label: 'Barcode mapping' }, { value: 'skus', label: 'SKU mapping' }, { value: 'generate', label: 'Generate & map' }]} value={tab} onChange={setTab} />{tab === 'content' ? <Panel title="Product content and quality" description="Use the parent SKU returned by product creation."><form className="inline-form" onSubmit={(event) => { event.preventDefault(); content.run(parentSku.trim()) }}><Field label="Noon parent SKU"><input value={parentSku} onChange={(event) => setParentSku(event.target.value)} /></Field><button className="primary-button" disabled={!parentSku.trim() || content.busy}>Check content</button></form><ErrorNotice error={content.error} />{content.result ? <><div className="success-summary"><div><span>Parent SKU</span><strong>{content.result.sku_parent}</strong></div><div><span>Images</span><strong>{content.result.images?.length || 0}</strong></div></div><DataTable columns={statusColumns} rows={statuses} rowKey={(row, index) => row.language || index} emptyTitle="No content statuses returned" /></> : null}</Panel> : tab === 'barcode' ? <Panel title="Map a barcode" description="Associate one barcode with a seller SKU."><form className="form-grid" onSubmit={map}><Field label="Seller SKU"><input value={partnerSku} onChange={(event) => setPartnerSku(event.target.value)} /></Field><Field label="Barcode"><input value={barcode} onChange={(event) => setBarcode(event.target.value)} /></Field><button className="primary-button" disabled={!partnerSku.trim() || !barcode.trim() || barcodeMap.busy}>Map barcode</button></form><ErrorNotice error={barcodeMap.error} /><DataTable columns={mappingColumns} rows={mappingRows} rowKey={(row) => `${row.partner_sku}-${row.barcode}`} emptyTitle="No barcode operation yet" /></Panel> : tab === 'skus' ? <SkuMapping notify={notify} /> : <GenerateSkuMapping notify={notify} />}</>
+  return <><Tabs items={[{ value: 'content', label: 'Content and QC' }, { value: 'barcode', label: 'Barcode mapping' }, { value: 'skus', label: 'SKU mapping' }, { value: 'generate', label: 'Generate & map' }]} value={tab} onChange={setTab} />{tab === 'content' ? <Panel title="Product content and quality" description="Use the parent SKU returned by product creation."><form className="inline-form" onSubmit={(event) => { event.preventDefault(); content.run(parentSku.trim()) }}><Field label="Noon parent SKU"><input value={parentSku} onChange={(event) => setParentSku(event.target.value)} /></Field><button className="primary-button" disabled={!parentSku.trim() || content.busy}>Check content</button></form><ErrorNotice error={content.error} />{content.result ? <><div className="success-summary"><div><span>Parent SKU</span><strong>{content.result.sku_parent}</strong></div><div><span>Images</span><strong>{content.result.images?.length || 0}</strong></div></div><DataTable columns={statusColumns} rows={statuses} rowKey={(row, index) => row.language || index} emptyTitle="No content statuses returned" /></> : null}</Panel> : tab === 'barcode' ? <Panel title="Map a barcode" description="Associate one barcode with a seller SKU."><form className="form-grid" onSubmit={map}><Field label="Seller SKU"><input value={partnerSku} onChange={(event) => setPartnerSku(event.target.value)} /></Field><Field label="Barcode"><input value={barcode} onChange={(event) => setBarcode(event.target.value)} /></Field><button className="primary-button" disabled={!partnerSku.trim() || !barcode.trim() || barcodeMap.busy}>Map barcode</button></form><ErrorNotice error={barcodeMap.error} /><DataTable columns={mappingColumns} rows={mappingRows} rowKey={(row) => `${row.partner_sku}-${row.barcode}`} emptyTitle="No barcode operation yet" /></Panel> : tab === 'skus' ? <SkuMapping notify={notify} /> : <GenerateAndMapSkus notify={notify} />}</>
 }
 
 export function Catalog({ notify }) {

@@ -1,3 +1,5 @@
+import { displayValue } from '../utils/format'
+
 export function Icon({ name, size = 18 }) {
   const paths = {
     grid: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
@@ -47,7 +49,7 @@ export function Modal({ title, description, onClose, children, footer, wide = fa
 
 export function DataTable({ columns, rows, rowKey, emptyTitle = 'No records found', onRowClick }) {
   if (!rows.length) return <EmptyState title={emptyTitle} message="Adjust the filters or refresh the data." />
-  return <div className="table-scroll"><table className="data-table"><thead><tr>{columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={rowKey ? rowKey(row, index) : index} className={onRowClick ? 'clickable-row' : ''} onClick={onRowClick ? () => onRowClick(row) : undefined}>{columns.map((column) => <td key={column.key}>{column.render ? column.render(row, index) : row[column.key] ?? '—'}</td>)}</tr>)}</tbody></table></div>
+  return <div className="table-scroll"><table className="data-table"><thead><tr>{columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={rowKey ? rowKey(row, index) : index} className={onRowClick ? 'clickable-row' : ''} onClick={onRowClick ? () => onRowClick(row) : undefined}>{columns.map((column) => <td key={column.key}>{column.render ? column.render(row, index) : displayValue(row[column.key])}</td>)}</tr>)}</tbody></table></div>
 }
 
 export function Tabs({ items, value, onChange }) {

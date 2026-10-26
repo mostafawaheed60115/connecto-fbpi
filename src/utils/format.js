@@ -1,5 +1,33 @@
 export const COUNTRY_LABELS = { eg: 'Egypt', ae: 'UAE', sa: 'Saudi Arabia' }
 
+export function displayValue(value) {
+  if (value === null || value === undefined || value === '') return '—'
+  if (typeof value === 'string' || typeof value === 'number') return value
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if (Array.isArray(value)) return value.map(displayValue).join(', ') || '—'
+  if (typeof value === 'object') {
+    if (typeof value.value === 'string' || typeof value.value === 'number') return displayValue(value.value)
+    if (typeof value.name === 'string') return value.name
+    if (typeof value.message === 'string') return value.message
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return '—'
+    }
+  }
+  return String(value)
+}
+
+export function isFailureStatus(status) {
+  if (!status || typeof status !== 'object') return false
+  if (status.status_id !== null && status.status_id !== undefined && status.status_id !== '') {
+    const statusId = Number(status.status_id)
+    if (Number.isFinite(statusId)) return statusId !== 0
+  }
+  const statusCode = String(status.status_code || '').trim().toLowerCase()
+  return Boolean(statusCode) && statusCode !== 'ok'
+}
+
 export function formatDate(value) {
   if (!value) return '—'
   const date = new Date(value)

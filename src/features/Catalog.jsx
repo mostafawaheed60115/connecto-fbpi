@@ -1,7 +1,7 @@
 import { useDeferredValue, useMemo, useState } from 'react'
 import { DEFAULT_SKU, noonApi } from '../api'
 import { useAsyncAction } from '../hooks/useAsyncAction'
-import { categoryLabel, humanize } from '../utils/format'
+import { categoryLabel, displayValue, humanize, isFailureStatus } from '../utils/format'
 import { DataTable, EmptyState, ErrorNotice, Field, Icon, Modal, Panel, StatusBadge, Tabs } from '../components/ui'
 
 const STEPS = ['Product identity', 'Category & attributes', 'Variants & media', 'Review & submit']
@@ -154,10 +154,10 @@ function SkuMapping({ notify }) {
   const incomplete = rows.some((row) => Boolean(row.partner_sku.trim()) !== Boolean(row.nsku_child.trim()))
   const resultRows = mapSkus.result?.items || []
   const resultColumns = [
-    { key: 'partner_sku', label: 'Seller SKU' },
-    { key: 'nsku_child', label: 'Noon NSKU child' },
-    { key: 'status', label: 'API status', render: (row) => <StatusBadge tone={(row.status?.status_code || 'OK') === 'OK' ? 'success' : 'warning'}>{row.status?.status_code || 'OK'}</StatusBadge> },
-    { key: 'message', label: 'Message', render: (row) => row.status?.message || '—' },
+    { key: 'partner_sku', label: 'Seller SKU', render: (row) => displayValue(row.partner_sku) },
+    { key: 'nsku_child', label: 'Noon NSKU child', render: (row) => displayValue(row.nsku_child) },
+    { key: 'status', label: 'API status', render: (row) => <StatusBadge tone={isFailureStatus(row.status) ? 'warning' : 'success'}>{row.status?.status_code || 'OK'}</StatusBadge> },
+    { key: 'message', label: 'Message', render: (row) => displayValue(row.status?.message) },
   ]
 
   function updateRow(index, key, value) {
@@ -177,7 +177,16 @@ function SkuMapping({ notify }) {
     if (incomplete) return notify('Complete both fields in every SKU mapping row.', 'warning')
     if (!items.length) return notify('Add at least one seller SKU and Noon NSKU child.', 'warning')
     const response = await mapSkus.run(items)
-    if (response) notify(`${items.length} SKU mapping${items.length === 1 ? '' : 's'} submitted to Noon.`)
+    if (response) {
+      const results = Array.isArray(response.items) ? response.items : []
+      const failed = results.filter((item) => isFailureStatus(item.status))
+      if (failed.length) {
+        const firstMessage = failed.find((item) => item.status?.message)?.status.message
+        notify(`${failed.length} of ${results.length} SKU mapping${results.length === 1 ? '' : 's'} rejected by Noon${firstMessage ? `: ${firstMessage}` : '.'}`, 'warning')
+      } else {
+        notify(`${items.length} SKU mapping${items.length === 1 ? '' : 's'} submitted to Noon.`)
+      }
+    }
   }
 
   return <Panel title="Batch SKU mapping" description="Map seller SKUs to Noon child NSKUs. Use #del# as the NSKU child to remove an existing mapping.">

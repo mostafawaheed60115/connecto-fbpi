@@ -231,7 +231,7 @@ function GenerateSkuMapping({ notify }) {
     const upsert = await upsertProduct.run({
       skus: [{ partner_sku: sku.trim() }],
       brand: 'Generic',
-      category: 'kitchen-dining-coffee-tea-mug',
+      category: 'books-food_drink-drinks_beverages_coffee_tea',
       images: [{ url: 'https://pub-2828d39640284bd1b08194cd95d1cb43.r2.dev/Bubble_wrap_roll_for_packing_20260922141659.jpeg', sort: 1 }],
       attributes: {
         product_title: { values: [{ value: 'test', language: 'LANGUAGE_EN' }, { value: 'تيست', language: 'LANGUAGE_AR' }] },

@@ -230,9 +230,9 @@ function GenerateSkuMapping({ notify }) {
     setGeneratedSku(sku.trim())
     const upsert = await upsertProduct.run({
       skus: [{ partner_sku: sku.trim() }],
-      brand: 'Connecto',
+      brand: 'Acme',
       category: 'apparel-shoes-sneakers',
-      images: [{ url: 'https://placehold.co/600x400/png', sort: 1 }],
+      images: [{ url: 'https://cdn.example.com/acme-runner-main.jpg', sort: 1 }],
       attributes: {
         product_title: { values: [{ value: title, language: 'LANGUAGE_EN' }, { value: title, language: 'LANGUAGE_AR' }] },
         shoe_size: { values: [{ value: '42' }] },
